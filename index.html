@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
   <meta name="apple-mobile-web-app-title" content="GainsTracker"/>
-  <meta name="theme-color" content="#f0b429"/>
+  <meta name="theme-color" content="#0b2a5e"/>
   <meta name="description" content="Muscle growth fitness tracker — workouts, meals, supplements & weight logging"/>
 
   <title>💪 Muscle Growth Tracker</title>
@@ -28,7 +28,7 @@
 
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { height: 100%; background: #07070f; overscroll-behavior: none; }
+    html, body { height: 100%; overscroll-behavior: none; }
     #root { height: 100%; }
     /* iOS safe areas */
     #app-wrap {
@@ -36,6 +36,16 @@
       padding-bottom: env(safe-area-inset-bottom);
     }
   </style>
+  <script>
+    // Paint the saved theme's background before the app loads (no flash).
+    (function () {
+      var bg = { blue: "#0b2a5e", green: "#0b3627", light: "#eef3fb", dark: "#0d0d0f" };
+      var t = "blue"; try { t = localStorage.getItem("ftTheme") || "blue"; } catch (e) {}
+      if (!bg[t]) t = "blue";
+      document.documentElement.style.background = bg[t];
+      var m = document.querySelector('meta[name="theme-color"]'); if (m) m.setAttribute("content", bg[t]);
+    })();
+  </script>
 </head>
 <body>
   <div id="root"></div>
@@ -118,6 +128,13 @@ var FTWLive = (function () {
     return true;
   }
   function unpair() { cfg = null; save(CFG_KEY, null); outbox = {}; save(OUT_KEY, outbox); closeStreams(); setStatus('off'); }
+  // Phone: create a new pairing here and hand the code to a watch that can't show one (Apple Watch).
+  function createPair(url) {
+    cfg = { url: String(url).replace(/\/+$/, ''), code: newCode() };
+    save(CFG_KEY, cfg); outbox = {}; save(OUT_KEY, outbox);
+    connect();
+    return { url: cfg.url, code: cfg.code };
+  }
 
   /* ---------------- streaming ---------------- */
   function closeStreams() {
@@ -285,7 +302,7 @@ var FTWLive = (function () {
     onStatus: function (fn) { statusFns.push(fn); fn(status); return function () { statusFns = statusFns.filter(function (f) { return f !== fn; }); }; },
     status: function () { return status; },
     isPaired: function () { return !!cfg; },
-    pairText: pairText, pairFrom: pairFrom, unpair: unpair,
+    pairText: pairText, pairFrom: pairFrom, unpair: unpair, createPair: createPair,
     pushSet: pushSet, pushRest: pushRest, pushStats: pushStats, pushWeight: pushWeight, flush: flush,
     config: function () { return cfg ? { url: cfg.url, code: cfg.code } : null; },
     pending: function () { return Object.keys(outbox).length; },
@@ -357,13 +374,13 @@ var WatchSync = (function () {
   var css = '' +
     '.ws-ov{position:fixed;inset:0;z-index:99999;background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:"DM Sans",system-ui,sans-serif;color:#eee}' +
     '.ws-ov video{width:100%;max-width:480px;max-height:70vh;object-fit:cover}' +
-    '.ws-box{position:absolute;width:62vmin;height:62vmin;max-width:300px;max-height:300px;border:3px solid #f0b429;border-radius:18px;box-shadow:0 0 0 100vmax rgba(0,0,0,.45)}' +
+    '.ws-box{position:absolute;width:62vmin;height:62vmin;max-width:300px;max-height:300px;border:3px solid #2ff3ff;border-radius:18px;box-shadow:0 0 0 100vmax rgba(0,0,0,.45)}' +
     '.ws-msg{position:absolute;bottom:14vh;left:0;right:0;text-align:center;font-size:17px;padding:0 20px}' +
-    '.ws-dots{display:flex;gap:6px;justify-content:center;margin-top:10px}.ws-dots i{width:10px;height:10px;border-radius:50%;background:#333}.ws-dots i.on{background:#f0b429}' +
+    '.ws-dots{display:flex;gap:6px;justify-content:center;margin-top:10px}.ws-dots i{width:10px;height:10px;border-radius:50%;background:#333}.ws-dots i.on{background:#2ff3ff}' +
     '.ws-x{position:absolute;top:18px;right:18px;background:#222;color:#eee;border:0;border-radius:22px;padding:10px 18px;font-size:16px}' +
     '.ws-photo{display:none;flex-direction:column;align-items:center;gap:16px;padding:0 28px;text-align:center}' +
     '.ws-photo p{font-size:15px;color:#aaa;line-height:1.45;max-width:340px}.ws-photo b{color:#eee}' +
-    '.ws-shoot{background:#f0b429;color:#111;border:0;border-radius:16px;padding:16px 28px;font:800 20px "Barlow Condensed",sans-serif;letter-spacing:1.5px}' +
+    '.ws-shoot{background:#2ff3ff;color:#111;border:0;border-radius:16px;padding:16px 28px;font:800 20px "Barlow Condensed",sans-serif;letter-spacing:1.5px}' +
     '.ws-ov.photo video,.ws-ov.photo .ws-box{display:none}.ws-ov.photo .ws-photo{display:flex}.ws-ov.photo .ws-msg{position:static;margin-top:18px}';
 
   function loadScript(src) {
@@ -612,15 +629,78 @@ var WatchSync = (function () {
   <script type="text/babel">
     const { useState, useEffect, useRef, useCallback } = React;
 
+/* ─── THEMES ─────────────────────────────────────────────────────────────── */
+// Picked under Progress → Appearance. Saved per device; switching reloads the page.
+const glassRule = (sel, shadow) => `[style*="${sel}"] { -webkit-backdrop-filter: blur(20px) saturate(160%); backdrop-filter: blur(20px) saturate(160%); box-shadow: 0 8px 28px rgba(${shadow},0.28), inset 0 1px 0 rgba(255,255,255,0.10); }`;
+const THEMES = {
+  blue: { name:"Blue glass", swatch:["#0f3a7a","#2ff3ff","#ff3df2"],
+    bg:"#0b2a5e", layers:"radial-gradient(900px 520px at 0% -5%, rgba(46,140,255,0.55), transparent 60%),radial-gradient(700px 520px at 105% 28%, rgba(124,77,255,0.42), transparent 60%),radial-gradient(760px 560px at 20% 105%, rgba(0,214,255,0.32), transparent 60%),linear-gradient(170deg, #0f3a7a 0%, #0b2a5e 45%, #081d44 100%)",
+    card:"rgba(255,255,255,0.085)", cardSel:"rgba(255, 255, 255, 0.085)", glass:true, ink:"255,255,255", shadow:"3,12,35",
+    inset:"rgba(6,22,56,0.38)", inset2:"rgba(6,22,56,0.30)", island:"rgba(6,20,48,0.88)", navBg:"rgba(14,44,96,0.48)", glow2:"rgba(123,92,255,0.30)",
+    text:"#ffffff", sub:"#c4d4f2", muted:"#a3b6dc", faint:"#8399c4",
+    acc:"#2ff3ff", accRgb:"47,243,255", acc2:"#ff3df2", accSoft:"#9ffaff", shine:"#e6fdff", onAcc:"#000000",
+    good:"#3dff9e", bad:"#ff4d8d", badRgb:"255,77,141", info:"#8fb4ff", purple:"#c77dff",
+    focal:["#2ff3ff","#7b5cff","#ff3df2"] },
+  green: { name:"Green glass", swatch:["#0f4a34","#c6ff3d","#2ff3ff"],
+    bg:"#0b3627", layers:"radial-gradient(900px 520px at 0% -5%, rgba(32,201,120,0.50), transparent 60%),radial-gradient(700px 520px at 105% 28%, rgba(0,200,180,0.38), transparent 60%),radial-gradient(760px 560px at 20% 105%, rgba(170,255,60,0.20), transparent 60%),linear-gradient(170deg, #0f4a34 0%, #0b3627 45%, #072619 100%)",
+    card:"rgba(255,255,255,0.085)", cardSel:"rgba(255, 255, 255, 0.085)", glass:true, ink:"255,255,255", shadow:"2,20,12",
+    inset:"rgba(4,30,20,0.38)", inset2:"rgba(4,30,20,0.30)", island:"rgba(4,26,18,0.88)", navBg:"rgba(10,60,42,0.48)", glow2:"rgba(61,255,176,0.26)",
+    text:"#ffffff", sub:"#c8eedc", muted:"#9fcfb8", faint:"#7fae98",
+    acc:"#c6ff3d", accRgb:"198,255,61", acc2:"#2ff3ff", accSoft:"#e4ff9f", shine:"#f6ffe0", onAcc:"#000000",
+    good:"#3dffb0", bad:"#ff4d8d", badRgb:"255,77,141", info:"#5ee7ff", purple:"#d08bff",
+    focal:["#c6ff3d","#3dffb0","#2ff3ff"] },
+  light: { name:"White light", swatch:["#f2f5fb","#0a6cff","#d42bd0"],
+    bg:"#eef3fb", layers:"radial-gradient(900px 520px at 0% -5%, rgba(120,170,255,0.45), transparent 60%),radial-gradient(700px 520px at 105% 28%, rgba(255,150,220,0.30), transparent 60%),radial-gradient(760px 560px at 20% 105%, rgba(120,235,255,0.35), transparent 60%),linear-gradient(170deg, #f6f8fd 0%, #eaf0fa 50%, #e3eaf7 100%)",
+    card:"rgba(255,255,255,0.62)", cardSel:"rgba(255, 255, 255, 0.62)", glass:true, ink:"20,32,64", shadow:"40,60,110",
+    inset:"rgba(255,255,255,0.55)", inset2:"rgba(255,255,255,0.42)", island:"rgba(255,255,255,0.94)", navBg:"rgba(255,255,255,0.62)", glow2:"rgba(10,108,255,0.18)",
+    text:"#0e1830", sub:"#3d4a66", muted:"#5c6a88", faint:"#8390ab",
+    acc:"#0a6cff", accRgb:"10,108,255", acc2:"#d42bd0", accSoft:"#0a55cc", shine:"#9cc8ff", onAcc:"#ffffff",
+    good:"#0f9d63", bad:"#e5265f", badRgb:"229,38,95", info:"#4f6bff", purple:"#8a3ffc",
+    focal:["#0a6cff","#7b5cff","#ff3d9a"] },
+  dark: { name:"Original dark", swatch:["#1c1c1f","#f0b429","#ff8f00"],
+    bg:"#0d0d0f", layers:"linear-gradient(#0d0d0f, #0d0d0f)",
+    card:"#1c1c1f", cardSel:"", glass:false, ink:"255,255,255", shadow:"0,0,0",
+    inset:"#161618", inset2:"#141416", island:"#0d0d0f", navBg:"rgba(30,30,33,0.62)", glow2:"rgba(163,92,255,0.22)",
+    text:"#ffffff", sub:"#a1a1a6", muted:"#8e8e93", faint:"#6e6e73",
+    acc:"#f0b429", accRgb:"240,180,41", acc2:"#ff8f00", accSoft:"#ffd45e", shine:"#fff4cc", onAcc:"#000000",
+    good:"#39d98a", bad:"#ff6b6b", badRgb:"255,107,107", info:"#4fc3f7", purple:"#bb8fce",
+    focal:["#3d7bff","#a35cff","#ff8a3d"] },
+};
+const THEME_ID = (() => { try { const t = localStorage.getItem("ftTheme"); return THEMES[t] ? t : "blue"; } catch (e) { return "blue"; } })();
+const P = THEMES[THEME_ID];
+P.glassCss = P.glass ? glassRule(P.cardSel, P.shadow) : "";
+function setTheme(id) {
+  try { localStorage.setItem("ftTheme", id); } catch (e) {}
+  location.reload();
+}
+
 /* ─── FONTS & GLOBAL STYLES ─────────────────────────────────────────────── */
 const GlobalStyle = () => (
   <style>{`
     @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800;900&family=DM+Sans:wght@300;400;500;600&display=swap');
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body, #root { background: #07070f; }
+    body { background: ${P.bg}; color: ${P.text}; }
+    #root { background: transparent; }
+    body::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none; background: ${P.layers}; }
+    /* Frosted glass: every card surface blurs what's behind it */
+    ${P.glassCss}
+    /* Pill-shaped actions everywhere: buttons and tabs are full capsules */
+    button { border-radius: 999px !important; -webkit-tap-highlight-color: transparent; }
+    button:focus-visible, input:focus-visible { outline: 2px solid ${P.acc}; outline-offset: 2px; }
+    input { border-radius: 16px; }
+    /* Floating frosted-glass navigation */
+    .nav-float { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(12px + env(safe-area-inset-bottom));
+      width: min(448px, calc(100% - 24px)); z-index: 60; display: flex; gap: 4px; padding: 6px;
+      background: ${P.navBg}; -webkit-backdrop-filter: blur(22px) saturate(170%); backdrop-filter: blur(22px) saturate(170%);
+      border: 1px solid rgba(${P.ink},0.18); border-radius: 999px; box-shadow: 0 10px 30px rgba(${P.shadow},0.45); }
+    .nav-tab { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 8px 4px 7px;
+      background: transparent; border: none; cursor: pointer; color: ${P.muted}; transition: background .25s ease, color .25s ease; }
+    .nav-tab.on { background: rgba(${P.accRgb},0.16); color: ${P.acc}; }
+    .nav-tab span { font-family: 'DM Sans', sans-serif; font-size: 11px; font-weight: 600; }
+    @media (prefers-reduced-motion: reduce) { .nav-tab { transition: none; } }
     ::-webkit-scrollbar { width: 4px; }
-    ::-webkit-scrollbar-track { background: #111122; }
-    ::-webkit-scrollbar-thumb { background: #333355; border-radius: 2px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(${P.ink},0.3); border-radius: 2px; }
     @keyframes islandIn { from { opacity:0; transform:translateX(-50%) scaleX(0.6) scaleY(0.4); } to { opacity:1; transform:translateX(-50%) scaleX(1) scaleY(1); } }
     @keyframes fadeUp { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
     @keyframes pop { 0%{transform:scale(0.5);opacity:0} 60%{transform:scale(1.2)} 100%{transform:scale(1);opacity:1} }
@@ -630,7 +710,7 @@ const GlobalStyle = () => (
     @keyframes confettiFall { 0%{transform:translateY(-20px) rotate(0deg);opacity:1} 100%{transform:translateY(120vh) rotate(720deg);opacity:0} }
     @keyframes ringFill { from { stroke-dashoffset: 314; } }
     @keyframes shimmer { 0%{background-position:-200% 0} 100%{background-position:200% 0} }
-    @keyframes pulseGlow { 0%,100%{box-shadow:0 0 10px rgba(240,180,41,0.3)} 50%{box-shadow:0 0 30px rgba(240,180,41,0.8)} }
+    @keyframes pulseGlow { 0%,100%{box-shadow:0 0 10px rgba(${P.accRgb},0.3)} 50%{box-shadow:0 0 30px rgba(${P.accRgb},0.8)} }
     @keyframes streakBounce { 0%,100%{transform:scale(1)} 50%{transform:scale(1.15)} }
     @keyframes shine { 0%{background-position:150% 0} 100%{background-position:-50% 0} }
     @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; } }
@@ -643,7 +723,7 @@ const GlobalStyle = () => (
 
 /* ─── DATA ───────────────────────────────────────────────────────────────── */
 const WEEKLY_PLAN = {
-  1: { name:"Push Day A", sub:"Chest · Shoulders · Triceps", emoji:"🔴", color:"#ff6b6b", type:"heavy",
+  1: { name:"Push Day A", sub:"Chest · Shoulders · Triceps", emoji:"🔴", color:`${P.bad}`, type:"heavy",
     exercises:[
       {id:"bench",     name:"Barbell Bench Press",    sets:"4", reps:"6–8",   rest:"3 min"},
       {id:"inc_db",    name:"Incline DB Press",        sets:"3", reps:"8–12",  rest:"2 min"},
@@ -653,7 +733,7 @@ const WEEKLY_PLAN = {
       {id:"skulls",    name:"Skull Crushers",          sets:"3", reps:"10–12", rest:"90s"},
       {id:"pushdown",  name:"Cable Pushdown",          sets:"2", reps:"15–20", rest:"45s"},
     ]},
-  2: { name:"Pull Day A", sub:"Back · Biceps · Rear Delts", emoji:"🔵", color:"#4fc3f7", type:"heavy",
+  2: { name:"Pull Day A", sub:"Back · Biceps · Rear Delts", emoji:"🔵", color:`${P.info}`, type:"heavy",
     exercises:[
       {id:"deadlift",  name:"Conventional Deadlift",  sets:"3", reps:"4–6",   rest:"3 min"},
       {id:"bb_row",    name:"Barbell Row (Overhand)",  sets:"4", reps:"8–10",  rest:"2 min"},
@@ -663,7 +743,7 @@ const WEEKLY_PLAN = {
       {id:"inc_curl",  name:"Incline DB Curl",         sets:"3", reps:"10–12", rest:"90s"},
       {id:"hammer",    name:"Hammer Curl",             sets:"2", reps:"12–15", rest:"60s"},
     ]},
-  3: { name:"Leg Day A", sub:"Quads · Hamstrings · Glutes", emoji:"🟢", color:"#39d98a", type:"heavy",
+  3: { name:"Leg Day A", sub:"Quads · Hamstrings · Glutes", emoji:"🟢", color:`${P.good}`, type:"heavy",
     exercises:[
       {id:"squat",     name:"Barbell Back Squat",      sets:"4", reps:"6–8",   rest:"3 min"},
       {id:"rdl",       name:"Romanian Deadlift",       sets:"3", reps:"8–10",  rest:"2 min"},
@@ -673,8 +753,8 @@ const WEEKLY_PLAN = {
       {id:"hip_thrust",name:"Hip Thrust",              sets:"3", reps:"12–15", rest:"90s"},
       {id:"calf",      name:"Standing Calf Raise",     sets:"4", reps:"10–12", rest:"90s"},
     ]},
-  4: { name:"Rest + Mobility", sub:"Active Recovery · Stretch", emoji:"🧘", color:"#888aaa", type:"rest", exercises:[] },
-  5: { name:"Push Day B", sub:"Chest · Shoulders · Triceps", emoji:"🟡", color:"#f0b429", type:"moderate",
+  4: { name:"Rest + Mobility", sub:"Active Recovery · Stretch", emoji:"🧘", color:`${P.sub}`, type:"rest", exercises:[] },
+  5: { name:"Push Day B", sub:"Chest · Shoulders · Triceps", emoji:"🟡", color:`${P.acc}`, type:"moderate",
     exercises:[
       {id:"inc_db2",   name:"Incline DB Bench Press",  sets:"4", reps:"10–12", rest:"90s"},
       {id:"db_press2", name:"DB Shoulder Press",       sets:"3", reps:"10–12", rest:"90s"},
@@ -684,7 +764,7 @@ const WEEKLY_PLAN = {
       {id:"ot_ext",    name:"Overhead Tricep Ext.",    sets:"3", reps:"12–15", rest:"60s"},
       {id:"dips",      name:"Dips (Bodyweight)",       sets:"3", reps:"12–15", rest:"90s"},
     ]},
-  6: { name:"Pull Day B", sub:"Back · Biceps · Rear Delts", emoji:"🟣", color:"#bb8fce", type:"moderate",
+  6: { name:"Pull Day B", sub:"Back · Biceps · Rear Delts", emoji:"🟣", color:`${P.purple}`, type:"moderate",
     exercises:[
       {id:"lat_pull",  name:"Lat Pulldown (Wide)",     sets:"4", reps:"10–12", rest:"90s"},
       {id:"db_row2",   name:"DB Row (Single Arm)",     sets:"4", reps:"10–12", rest:"90s"},
@@ -694,7 +774,7 @@ const WEEKLY_PLAN = {
       {id:"cab_curl",  name:"Cable Curl",              sets:"3", reps:"12–15", rest:"60s"},
       {id:"rev_curl",  name:"Reverse Curl",            sets:"2", reps:"15",    rest:"45s"},
     ]},
-  0: { name:"Full Rest Day", sub:"Sleep · Nutrition · Recovery", emoji:"😴", color:"#555577", type:"rest", exercises:[] },
+  0: { name:"Full Rest Day", sub:"Sleep · Nutrition · Recovery", emoji:"😴", color:`${P.muted}`, type:"rest", exercises:[] },
 };
 
 const MEALS = [
@@ -706,10 +786,10 @@ const MEALS = [
 ];
 
 const SUPPLEMENTS = [
-  {id:"creatine",  emoji:"⚡", name:"Creatine Monohydrate", dose:"5g",            timing:"Morning", color:"#f0b429"},
+  {id:"creatine",  emoji:"⚡", name:"Creatine Monohydrate", dose:"5g",            timing:"Morning", color:`${P.acc}`},
   {id:"d3k2",      emoji:"☀️", name:"Vitamin D3 + K2",     dose:"4,000–6,000 IU",timing:"Morning", color:"#ffd700"},
-  {id:"omega3",    emoji:"🐟", name:"Omega-3 Fish Oil",    dose:"3–4g EPA/DHA",  timing:"Lunch",   color:"#4fc3f7"},
-  {id:"pea_rice",  emoji:"🌿", name:"Pea + Rice Protein",  dose:"30–40g",        timing:"Post-WO", color:"#bb8fce"},
+  {id:"omega3",    emoji:"🐟", name:"Omega-3 Fish Oil",    dose:"3–4g EPA/DHA",  timing:"Lunch",   color:`${P.info}`},
+  {id:"pea_rice",  emoji:"🌿", name:"Pea + Rice Protein",  dose:"30–40g",        timing:"Post-WO", color:`${P.purple}`},
   {id:"magnesium", emoji:"🌙", name:"Magnesium Glycinate", dose:"400mg",         timing:"Bedtime", color:"#4ecdc4"},
   {id:"zinc",      emoji:"🔩", name:"Zinc",                dose:"25mg",          timing:"Bedtime", color:"#95a5a6"},
   {id:"caffeine",  emoji:"☕", name:"Caffeine",            dose:"200mg MAX",     timing:"Pre-WO",  color:"#e8956d"},
@@ -797,7 +877,7 @@ const normCell = (s) => !s ? {done:false,lbs:"",reps:""} : typeof s === "boolean
 const cellHash = (c) => `${c.done?1:0}|${c.lbs}|${c.reps}`;
 const cellEmpty = (c) => !c.done && !c.lbs && !c.reps;
 const numOrNull = (v) => { const n = parseFloat(v); return isNaN(n) ? null : n; };
-const planColorFor = (exId) => { const p = Object.values(WEEKLY_PLAN).find(p => p.exercises.some(e => e.id === exId)); return p ? p.color : "#f0b429"; };
+const planColorFor = (exId) => { const p = Object.values(WEEKLY_PLAN).find(p => p.exercises.some(e => e.id === exId)); return p ? p.color : `${P.acc}`; };
 
 function writeCell(logs, date, exId, idx, cell) {
   const day = {...(logs[date] || {})};
@@ -987,27 +1067,58 @@ function openHealthBridge(onMissing) {
 }
 
 /* ─── TODAY'S ACTIVITY (watch sensors + Samsung Health) ─────────────────── */
+/* ─── WATCH TYPE (Galaxy Watch or Apple Watch) ─────────────────────────── */
+// Your Firebase database URL, so Apple Watch setup works on a phone that has never been paired.
+// Leave it empty to type it in once on the Watch card instead.
+const FTW_DEFAULT_SYNC_URL = "";
+
+const isAppleDevice = () => /iPhone|iPad|iPod/.test(navigator.userAgent) ||
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+function getWatchKind() {
+  try { const k = localStorage.getItem("watchKind"); if (k === "apple" || k === "galaxy") return k; } catch {}
+  return isAppleDevice() ? "apple" : "galaxy";
+}
+function saveWatchKind(k) {
+  try { localStorage.setItem("watchKind", k); } catch {}
+  window.dispatchEvent(new Event("watchkind"));
+}
+function useWatchKind() {
+  const [kind, setKind] = useState(getWatchKind);
+  useEffect(() => {
+    const on = () => setKind(getWatchKind());
+    window.addEventListener("watchkind", on);
+    return () => window.removeEventListener("watchkind", on);
+  }, []);
+  return [kind, saveWatchKind];
+}
+const WATCH_NAME = { galaxy: "Galaxy Watch", apple: "Apple Watch" };
+const cleanSyncUrl = (v) => {
+  v = String(v || "").trim().replace(/\/+$/, "");
+  return /^https:\/\/[a-z0-9.-]+\.(firebaseio\.com|firebasedatabase\.app)$/i.test(v) ? v.toLowerCase() : null;
+};
+
 function ActivityCard({ activity }) {
+  const [kind] = useWatchKind();
   const today = todayKey();
   const a = activity[today] || {};
   const w = a.w || {}, hc = a.hc || {};
   const steps = Math.max(w.s || 0, hc.s || 0);
-  const stepSrc = steps === 0 ? null : (hc.s || 0) >= (w.s || 0) ? "Samsung Health" : "Galaxy Watch";
+  const stepSrc = steps === 0 ? null : (hc.s || 0) >= (w.s || 0) ? "Samsung Health" : WATCH_NAME[kind];
   const hrSrc = [w, hc].filter(x => x.hr).sort((x, y) => (y.t || 0) - (x.t || 0))[0];
   const lows = [w.hrMin, hc.hrMin].filter(Boolean);
   const updated = Math.max(w.t || 0, hc.t || 0);
   const GOAL = 10000, pct = Math.min(100, Math.round(steps / GOAL * 100));
-  const label = {fontFamily: "'DM Sans',sans-serif", fontSize: 10, color: "#555577", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5};
-  const big = {fontFamily: "'Barlow Condensed',sans-serif", fontSize: 26, fontWeight: 800, color: "#fff", lineHeight: 1.05};
+  const label = {fontFamily: "'DM Sans',sans-serif", fontSize: 10, color: `${P.muted}`, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5};
+  const big = {fontFamily: "'Barlow Condensed',sans-serif", fontSize: 26, fontWeight: 800, color: `${P.text}`, lineHeight: 1.05};
 
   return (
-    <div style={{background: "#111120", borderRadius: 20, padding: "16px 18px", border: "1px solid #1a1a2e"}}>
+    <div style={{background: `${P.card}`, borderRadius: 28, padding: "16px 18px", border: `1px solid rgba(${P.ink},0.16)`}}>
       <div style={{display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12}}>
-        <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: "#888aaa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5}}>Today's activity</div>
-        <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: "#555577"}}>{updated ? `updated ${agoText(updated)}` : "waiting for watch…"}</div>
+        <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: `${P.sub}`, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5}}>Today's activity</div>
+        <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: `${P.muted}`}}>{updated ? `updated ${agoText(updated)}` : "waiting for watch…"}</div>
       </div>
       <div style={{display: "flex", alignItems: "center", gap: 16}}>
-        <Ring pct={pct} color="#39d98a" size={84} stroke={7}>
+        <Ring pct={pct} color="gradient" size={84} stroke={7}>
           <span style={{fontSize: 22}}>👟</span>
         </Ring>
         <div style={{flex: 1, display: "grid", gridTemplateColumns: "1fr 1fr", rowGap: 12, columnGap: 10}}>
@@ -1016,7 +1127,7 @@ function ActivityCard({ activity }) {
             <div style={label}>steps · {pct}% of 10k</div>
           </div>
           <div>
-            <div style={{...big, color: hrSrc ? "#ff6b6b" : "#444466"}}>{hrSrc ? `♥ ${hrSrc.hr}` : "♥ —"}</div>
+            <div style={{...big, color: hrSrc ? `${P.bad}` : `${P.faint}`}}>{hrSrc ? `♥ ${hrSrc.hr}` : "♥ —"}</div>
             <div style={label}>{lows.length ? `bpm · low ${Math.min(...lows)}` : "bpm"}</div>
           </div>
           {(w.c > 0 || w.k > 0) && <>
@@ -1025,7 +1136,7 @@ function ActivityCard({ activity }) {
           </>}
         </div>
       </div>
-      {stepSrc && <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: "#444466", marginTop: 10}}>Steps from {stepSrc}</div>}
+      {stepSrc && <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: `${P.faint}`, marginTop: 10}}>Steps from {stepSrc}</div>}
     </div>
   );
 }
@@ -1037,6 +1148,7 @@ function LiveStatus() {
 }
 
 function WatchSyncCard({ logs, setLogs, onCelebrate, health }) {
+  const [kind] = useWatchKind();
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [last, setLast] = useState(() => { try { return localStorage.getItem("watchLastSync"); } catch { return null; } });
@@ -1101,16 +1213,16 @@ function WatchSyncCard({ logs, setLogs, onCelebrate, health }) {
     `Synced ${agoText(health.t)}${health.n ? ` · ${health.n} workout${health.n === 1 ? "" : "s"} saved` : ""}`;
 
   const LIVE_TXT = {
-    live:       ["#39d98a", "Live", "Sets and rest timers sync instantly"],
-    connecting: ["#f0b429", "Connecting", "Reaching your sync database…"],
-    offline:    ["#ff6b6b", "Offline", "Changes will sync when you're back online"],
-    error:      ["#ff6b6b", "Error", "Can't reach the sync database. Check its rules (see README)."],
+    live:       [`${P.good}`, "Live", "Sets and rest timers sync instantly"],
+    connecting: [`${P.acc}`, "Connecting", "Reaching your sync database…"],
+    offline:    [`${P.bad}`, "Offline", "Changes will sync when you're back online"],
+    error:      [`${P.bad}`, "Error", "Can't reach the sync database. Check its rules (see README)."],
   };
 
   const btn = (primary) => ({
-    flex: 1, padding: "12px 8px", borderRadius: 12, cursor: busy ? "default" : "pointer",
-    border: primary ? "none" : "1px solid #2a2a3e", background: primary ? "#f0b429" : "#1a1a2e",
-    color: primary ? "#000" : "#fff", opacity: busy ? 0.5 : 1,
+    flex: 1, padding: "12px 8px", borderRadius: 16, cursor: busy ? "default" : "pointer",
+    border: primary ? "none" : `1px solid rgba(${P.ink},0.22)`, background: primary ? `${P.acc}` : `rgba(${P.ink},0.13)`,
+    color: primary ? `${P.onAcc}` : `${P.text}`, opacity: busy ? 0.5 : 1,
     fontFamily: "'Barlow Condensed',sans-serif", fontSize: 16, fontWeight: 800, letterSpacing: 1,
   });
   const ago = last ? (() => {
@@ -1120,53 +1232,652 @@ function WatchSyncCard({ logs, setLogs, onCelebrate, health }) {
 
   const lt = LIVE_TXT[live];
   return (
-    <div style={{background: "#111120", borderRadius: 20, padding: "16px 18px", border: "1px solid #1a1a2e"}}>
+    <div style={{background: `${P.card}`, borderRadius: 28, padding: "16px 18px", border: `1px solid rgba(${P.ink},0.16)`}}>
       <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12}}>
         <div>
-          <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: "#888aaa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5}}>⌚ Galaxy Watch</div>
-          <div style={{fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, fontWeight: 800, color: "#fff"}}>{paired ? "WATCH LINK" : "SYNC WORKOUTS"}</div>
+          <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: `${P.sub}`, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5}}>{kind === "apple" ? "" : "⌚ "}{WATCH_NAME[kind]}</div>
+          <div style={{fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, fontWeight: 800, color: `${P.text}`}}>{paired ? "WATCH LINK" : "SYNC WORKOUTS"}</div>
         </div>
         {paired && lt ? (
-          <div style={{display: "flex", alignItems: "center", gap: 6, background: `${lt[0]}1a`, border: `1px solid ${lt[0]}55`, borderRadius: 20, padding: "5px 11px"}}>
+          <div style={{display: "flex", alignItems: "center", gap: 6, background: `${lt[0]}1a`, border: `1px solid ${lt[0]}55`, borderRadius: 28, padding: "5px 11px"}}>
             <div style={{width: 8, height: 8, borderRadius: "50%", background: lt[0], boxShadow: `0 0 6px ${lt[0]}`, animation: live === "live" ? "pulseGlow 2s ease-in-out infinite" : "none"}}/>
             <span style={{fontFamily: "'Barlow Condensed',sans-serif", fontSize: 14, fontWeight: 800, letterSpacing: 1, color: lt[0], textTransform: "uppercase"}}>{lt[1]}</span>
           </div>
         ) : (
-          <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: "#555577", textAlign: "right"}}>Last sync<br/>{ago}</div>
+          <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: `${P.muted}`, textAlign: "right"}}>Last sync<br/>{ago}</div>
         )}
       </div>
 
       {paired ? (
         <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 12}}>
-          <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: "#888aaa", lineHeight: 1.4}}>{lt ? lt[2] : ""}</div>
-          <button onClick={unpair} style={{background: "none", border: "none", color: "#555577", fontFamily: "'DM Sans',sans-serif", fontSize: 11, cursor: "pointer", whiteSpace: "nowrap", textDecoration: "underline"}}>Unlink</button>
+          <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: `${P.sub}`, lineHeight: 1.4}}>{lt ? lt[2] : ""}</div>
+          <button onClick={unpair} style={{background: "none", border: "none", color: `${P.muted}`, fontFamily: "'DM Sans',sans-serif", fontSize: 11, cursor: "pointer", whiteSpace: "nowrap", textDecoration: "underline"}}>Unlink</button>
         </div>
-      ) : (
+      ) : kind === "galaxy" ? (
         <>
           <button disabled={busy} onClick={pair} style={{...btn(true), width: "100%", marginBottom: 8}}>🔗 PAIR WATCH FOR LIVE SYNC</button>
-          <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: "#555577", margin: "0 2px 10px", lineHeight: 1.4}}>
-            On the watch: open FitTracker → <b style={{color: "#888aaa"}}>Pair phone</b>, then tap the button above.
+          <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: `${P.muted}`, margin: "0 2px 10px", lineHeight: 1.4}}>
+            On the watch: open FitTracker → <b style={{color: `${P.sub}`}}>Pair phone</b>, then tap the button above.
           </div>
         </>
+      ) : (
+        <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: `${P.sub}`, margin: "0 2px 4px", lineHeight: 1.45}}>
+          Not linked yet. Set it up under <b style={{color: "#d1d1d6"}}>Progress → Watch settings → Advanced</b>.
+        </div>
       )}
 
-      {paired && (
-        <div style={{display: "flex", alignItems: "center", gap: 12, background: "#16162a", border: "1px solid #22223a", borderRadius: 14, padding: "10px 12px", marginBottom: 14}}>
+      {paired && kind === "apple" && (
+        <div style={{display: "flex", alignItems: "center", gap: 12, background: `rgba(${P.ink},0.13)`, border: `1px solid rgba(${P.ink},0.16)`, borderRadius: 20, padding: "10px 12px", marginBottom: 14}}>
           <div style={{fontSize: 22}}>❤️</div>
           <div style={{flex: 1, minWidth: 0}}>
-            <div style={{fontFamily: "'Barlow Condensed',sans-serif", fontSize: 16, fontWeight: 800, color: "#fff", letterSpacing: 0.5}}>SAMSUNG HEALTH</div>
-            <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: health && health.err ? "#ff6b6b" : "#888aaa", lineHeight: 1.35}}>{hcLine}</div>
+            <div style={{fontFamily: "'Barlow Condensed',sans-serif", fontSize: 16, fontWeight: 800, color: `${P.text}`, letterSpacing: 0.5}}>APPLE HEALTH</div>
+            <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: `${P.sub}`, lineHeight: 1.35}}>Saved by the watch app</div>
+          </div>
+        </div>
+      )}
+
+      {paired && kind === "galaxy" && (
+        <div style={{display: "flex", alignItems: "center", gap: 12, background: `rgba(${P.ink},0.13)`, border: `1px solid rgba(${P.ink},0.16)`, borderRadius: 20, padding: "10px 12px", marginBottom: 14}}>
+          <div style={{fontSize: 22}}>❤️</div>
+          <div style={{flex: 1, minWidth: 0}}>
+            <div style={{fontFamily: "'Barlow Condensed',sans-serif", fontSize: 16, fontWeight: 800, color: `${P.text}`, letterSpacing: 0.5}}>SAMSUNG HEALTH</div>
+            <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: health && health.err ? `${P.bad}` : `${P.sub}`, lineHeight: 1.35}}>{hcLine}</div>
           </div>
           <button onClick={connectHealth} style={{...btn(!health), flex: "none", padding: "9px 14px", fontSize: 14}}>{health ? "SYNC NOW" : "CONNECT"}</button>
         </div>
       )}
-      {status && <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: "#f0b429", marginTop: 10, lineHeight: 1.4}}>{status}</div>}
+      {status && <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: `${P.acc}`, marginTop: 10, lineHeight: 1.4}}>{status}</div>}
+    </div>
+  );
+}
+
+/* ─── WATCH SETTINGS (Progress tab → Advanced: watch type + Apple Watch setup) ── */
+/* ─── GYM CARDS: membership barcodes ─────────────────────────────────────── */
+// Barcodes are drawn here (no internet needed), except QR which loads a small
+// library once when you save a QR card; the drawn code is stored with the card.
+const BARCODE = (() => {
+  const C128 = "212222 222122 222221 121223 121322 131222 122213 122312 132212 221213 221312 231212 112232 122132 122231 113222 123122 123221 223211 221132 221231 213212 223112 312131 311222 321122 321221 312212 322112 322211 212123 212321 232121 111323 131123 131321 112313 132113 132311 211313 231113 231311 112133 112331 132131 113123 113321 133121 313121 211331 231131 213113 213311 213131 311123 311321 331121 312113 312311 332111 314111 221411 431111 111224 111422 121124 121421 141122 141221 112214 112412 122114 122411 142112 142211 241211 221114 413111 241112 134111 111242 121142 121241 114212 124112 124211 411212 421112 421211 212141 214121 412121 111143 111341 131141 114113 114311 411113 411311 113141 114131 311141 411131 211412 211214 211232 2331112".split(" ");
+  const widths = w => { let s = "", bar = true; for (const ch of w) { s += (bar ? "1" : "0").repeat(+ch); bar = !bar; } return s; };
+  function code128(text) {
+    if (!/^[\x20-\x7e]+$/.test(text)) throw new Error("Code 128 here takes letters, numbers and symbols only.");
+    const vals = []; const digits = /^\d+$/.test(text);
+    if (digits && text.length >= 4) {
+      vals.push(105);                                  // Start C
+      const even = text.length - (text.length % 2);
+      for (let i = 0; i < even; i += 2) vals.push(+text.slice(i, i + 2));
+      if (text.length % 2) { vals.push(100); vals.push(text.charCodeAt(text.length - 1) - 32); }  // Code B for the last digit
+    } else {
+      vals.push(104);                                  // Start B
+      for (const ch of text) vals.push(ch.charCodeAt(0) - 32);
+    }
+    let sum = vals[0]; for (let i = 1; i < vals.length; i++) sum += vals[i] * i;
+    vals.push(sum % 103); vals.push(106);
+    return vals.map(v => widths(C128[v])).join("");
+  }
+  const C39 = {"0":"101001101101","1":"110100101011","2":"101100101011","3":"110110010101","4":"101001101011","5":"110100110101","6":"101100110101","7":"101001011011","8":"110100101101","9":"101100101101","A":"110101001011","B":"101101001011","C":"110110100101","D":"101011001011","E":"110101100101","F":"101101100101","G":"101010011011","H":"110101001101","I":"101101001101","J":"101011001101","K":"110101010011","L":"101101010011","M":"110110101001","N":"101011010011","O":"110101101001","P":"101101101001","Q":"101010110011","R":"110101011001","S":"101101011001","T":"101011011001","U":"110010101011","V":"100110101011","W":"110011010101","X":"100101101011","Y":"110010110101","Z":"100110110101","-":"100101011011",".":"110010101101"," ":"100110101101","$":"100100100101","/":"100100101001","+":"100101001001","%":"101001001001","*":"100101101101"};
+  function code39(text) {
+    const t = text.toUpperCase();
+    for (const ch of t) if (!C39[ch] || ch === "*") throw new Error("Code 39 takes A–Z, 0–9 and - . $ / + % only.");
+    return ["*", ...t, "*"].map(ch => C39[ch]).join("0");
+  }
+  const CODA = {"0":"101010011","1":"101011001","2":"101001011","3":"110010101","4":"101101001","5":"110101001","6":"100101011","7":"100101101","8":"100110101","9":"110100101","-":"101001101","$":"101100101",":":"1101011011","/":"1101101011",".":"1101101101","+":"1011011011","A":"1011001001","B":"1001001011","C":"1010010011","D":"1010011001"};
+  function codabar(text) {
+    let t = text.toUpperCase();
+    if (!/^[A-D]/.test(t)) t = "A" + t;
+    if (!/[A-D]$/.test(t)) t = t + "A";
+    if (!/^[A-D][0-9\-$:/.+]*[A-D]$/.test(t)) throw new Error("Codabar takes 0–9 and - $ : / . + only.");
+    return [...t].map(ch => CODA[ch]).join("0");
+  }
+  const L = ["0001101","0011001","0010011","0111101","0100011","0110001","0101111","0111011","0110111","0001011"];
+  const R = L.map(p => [...p].map(b => b === "1" ? "0" : "1").join(""));
+  const G = R.map(p => [...p].reverse().join(""));
+  const PAR = ["LLLLLL","LLGLGG","LLGGLG","LLGGGL","LGLLGG","LGGLLG","LGGGLL","LGLGLG","LGLGGL","LGGLGL"];
+  const eanCheck = d12 => { let s = 0; for (let i = 0; i < 12; i++) s += +d12[i] * (i % 2 ? 3 : 1); return String((10 - s % 10) % 10); };
+  function ean13(text) {
+    let d = text.replace(/\s/g, "");
+    if (!/^\d{12,13}$/.test(d)) throw new Error("EAN-13 needs 12 or 13 digits.");
+    if (d.length === 12) d += eanCheck(d);
+    else if (eanCheck(d.slice(0, 12)) !== d[12]) throw new Error("The last digit doesn't match (check digit). Re-check the number.");
+    const par = PAR[+d[0]];
+    let s = "101";
+    for (let i = 1; i <= 6; i++) s += (par[i - 1] === "L" ? L : G)[+d[i]];
+    s += "01010";
+    for (let i = 7; i <= 12; i++) s += R[+d[i]];
+    return s + "101";
+  }
+  function upca(text) {
+    const d = text.replace(/\s/g, "");
+    if (!/^\d{11,12}$/.test(d)) throw new Error("UPC-A needs 11 or 12 digits.");
+    return ean13("0" + d);
+  }
+  const QR_URL = "https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js";
+  function loadQR() {
+    if (window.qrcode) return Promise.resolve();
+    return new Promise((ok, fail) => { const s = document.createElement("script"); s.src = QR_URL; s.onload = ok; s.onerror = () => fail(new Error("Couldn't load the QR maker. Connect to the internet once and try again.")); document.head.appendChild(s); });
+  }
+  function linearSVG(bits) {
+    const q = 10, w = bits.length + q * 2; let rects = "", i = 0;
+    while (i < bits.length) { if (bits[i] === "1") { let j = i; while (bits[j] === "1") j++; rects += `<rect x="${i + q}" y="0" width="${j - i}" height="60"/>`; i = j; } else i++; }
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} 60" preserveAspectRatio="none" shape-rendering="crispEdges"><rect width="${w}" height="60" fill="#fff"/><g fill="#000">${rects}</g></svg>`;
+  }
+  function qrSVG(text) {
+    const qr = window.qrcode(0, "M"); qr.addData(text); qr.make();
+    const n = qr.getModuleCount(), q = 4, w = n + q * 2; let p = "";
+    for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (qr.isDark(r, c)) p += `M${c + q} ${r + q}h1v1h-1z`;
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${w}" shape-rendering="crispEdges"><rect width="${w}" height="${w}" fill="#fff"/><path d="${p}" fill="#000"/></svg>`;
+  }
+  const FORMATS = [
+    {id:"code128", name:"Code 128"}, {id:"code39", name:"Code 39"}, {id:"codabar", name:"Codabar"},
+    {id:"ean13", name:"EAN-13"}, {id:"upca", name:"UPC-A"}, {id:"qr", name:"QR code"},
+  ];
+  const ENC = {code128, code39, codabar, ean13, upca};
+  // Returns a Promise of an SVG string (throws a readable Error if the number doesn't fit the format)
+  function render(format, value) {
+    const v = (value || "").trim();
+    if (!v) return Promise.reject(new Error("Enter your member number first."));
+    if (format === "qr") return loadQR().then(() => qrSVG(v));
+    try { return Promise.resolve(linearSVG(ENC[format](v))); } catch (e) { return Promise.reject(e); }
+  }
+  // camera formats (BarcodeDetector names) → ours
+  const FROM_DETECTOR = {code_128:"code128", code_39:"code39", codabar:"codabar", ean_13:"ean13", upc_a:"upca", qr_code:"qr"};
+  return { render, FORMATS, FROM_DETECTOR };
+})();
+
+const GYM_KEY = "gymCards";
+const GYM_DEFAULTS = [
+  {id:"ufc", name:"UFC Gym", mono:"UFC", code:"", format:"code128", logo:null, svg:null},
+  {id:"kif", name:"Kinetic Inspired Fitness", mono:"KIF", code:"", format:"code128", logo:null, svg:null},
+];
+function loadGymCards() {
+  try { const v = JSON.parse(localStorage.getItem(GYM_KEY)); if (Array.isArray(v)) return v; } catch (e) {}
+  return GYM_DEFAULTS.map(c => ({...c}));
+}
+function monogram(name) {
+  const w = (name || "").trim().split(/\s+/).filter(Boolean);
+  return (w.length > 1 ? w.slice(0, 3).map(x => x[0]).join("") : (w[0] || "?").slice(0, 3)).toUpperCase();
+}
+
+function GymLogo({card, size = 48}) {
+  if (card.logo) return (
+    <div style={{width:size, height:size, borderRadius:size * 0.3, background:"#fff", flexShrink:0, overflow:"hidden",
+      display:"flex", alignItems:"center", justifyContent:"center", border:`1px solid rgba(${P.ink},0.16)`}}>
+      <img src={card.logo} alt="" style={{width:"100%", height:"100%", objectFit:"contain"}}/>
+    </div>
+  );
+  const m = card.mono || monogram(card.name);
+  return (
+    <div aria-hidden="true" style={{width:size, height:size, borderRadius:size * 0.3, flexShrink:0,
+      background:`linear-gradient(135deg, ${FOCAL_GRADIENT[0]}, ${FOCAL_GRADIENT[1]} 55%, ${FOCAL_GRADIENT[2]})`,
+      display:"flex", alignItems:"center", justifyContent:"center",
+      fontFamily:"'Barlow Condensed',sans-serif", fontWeight:900, fontSize:size * (m.length > 2 ? 0.34 : 0.42),
+      color:"#fff", letterSpacing:0.5, textShadow:"0 1px 3px rgba(0,0,0,0.35)"}}>{m}</div>
+  );
+}
+
+// Full-screen pass for the front desk: white background so scanners read it.
+function GymPass({card, onClose, onEdit}) {
+  useEffect(() => {
+    let lock = null;
+    try { if (navigator.wakeLock) navigator.wakeLock.request("screen").then(l => { lock = l; }).catch(() => {}); } catch (e) {}
+    const onKey = e => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => { window.removeEventListener("keydown", onKey); try { lock && lock.release(); } catch (e) {} };
+  }, []);
+  const isQR = card.format === "qr";
+  return ReactDOM.createPortal(
+    <div role="dialog" aria-modal="true" aria-label={`${card.name} pass`} onClick={onClose}
+      style={{position:"fixed", inset:0, zIndex:900, background:"rgba(0,0,0,0.72)", display:"flex", alignItems:"center", justifyContent:"center", padding:16}}>
+      <div onClick={e => e.stopPropagation()} style={{width:"100%", maxWidth:440, background:"#fff", color:"#111", borderRadius:32, padding:"22px 20px 18px",
+        boxShadow:"0 20px 60px rgba(0,0,0,0.5)"}}>
+        <div style={{display:"flex", alignItems:"center", gap:12, marginBottom:18}}>
+          <GymLogo card={card} size={44}/>
+          <div style={{fontFamily:"'Barlow Condensed',sans-serif", fontSize:24, fontWeight:800, lineHeight:1.05}}>{card.name}</div>
+        </div>
+        <div style={{margin:"0 auto", width: isQR ? "min(78vw, 300px)" : "100%", height: isQR ? "min(78vw, 300px)" : 150}}
+          dangerouslySetInnerHTML={{__html: (card.svg || "").replace("<svg ", '<svg width="100%" height="100%" ')}}/>
+        <div style={{textAlign:"center", fontFamily:"'DM Sans',monospace", fontSize:18, fontWeight:600, letterSpacing:2, marginTop:10}}>{card.code}</div>
+        <div style={{textAlign:"center", fontFamily:"'DM Sans',sans-serif", fontSize:12, color:"#666", marginTop:6}}>If it won't scan, turn your screen brightness up.</div>
+        <div style={{display:"flex", gap:8, marginTop:16}}>
+          <button onClick={onEdit} style={{flex:1, padding:"12px", border:"1px solid #ddd", background:"#f2f2f4", color:"#111", fontFamily:"'DM Sans',sans-serif", fontSize:14, fontWeight:600, cursor:"pointer"}}>Edit</button>
+          <button onClick={onClose} style={{flex:2, padding:"12px", border:"none", background:"#111", color:"#fff", fontFamily:"'DM Sans',sans-serif", fontSize:14, fontWeight:700, cursor:"pointer"}}>Done</button>
+        </div>
+      </div>
+    </div>
+
+  , document.body);
+}
+
+// Reads barcodes from the camera or a picture. Uses the phone's built-in reader when it has
+// one (Chrome on Android); otherwise loads ZXing, a free open-source reader (iPhone, others).
+const GYM_READER = (() => {
+  const ZX_URL = "https://cdn.jsdelivr.net/npm/zxing-wasm@3.1.4/dist/iife/reader/index.js";
+  const WANT = ["code_128", "code_39", "codabar", "ean_13", "upc_a", "qr_code", "ean_8", "itf"];
+  let enginePromise = null;
+
+  function loadZX() {
+    const ready = () => window.ZXingWASM.prepareZXingModule({fireImmediately: true});
+    if (window.ZXingWASM) return ready();
+    return new Promise((ok, fail) => {
+      const s = document.createElement("script"); s.src = ZX_URL; s.onload = ok;
+      s.onerror = () => fail(new Error("Couldn't load the barcode reader. Check your internet connection."));
+      document.head.appendChild(s);
+    }).then(ready).catch(() => { throw new Error("Couldn't load the barcode reader. Check your internet connection."); });
+  }
+  // ZXing names → ours (Code128, Code39Std, EAN13, UPCA, QRCode…)
+  function zxFormat(name) {
+    const n = String(name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (n === "code128") return "code128";
+    if (n.startsWith("code39")) return "code39";
+    if (n === "codabar") return "codabar";
+    if (n === "ean13") return "ean13";
+    if (n === "upca") return "upca";
+    if (n.startsWith("qrcode")) return "qr";
+    return null;
+  }
+  function zxEngine() {
+    return {
+      kind: "zxing",
+      read(canvas) {
+        const img = canvas.getContext("2d", {willReadFrequently: true}).getImageData(0, 0, canvas.width, canvas.height);
+        return window.ZXingWASM.readBarcodes(img, {tryHarder: true, maxNumberOfSymbols: 1})
+          .then(rs => { const r = rs.find(x => x.isValid && x.text); return r ? {text: r.text, format: zxFormat(r.format)} : null; })
+          .catch(() => null);
+      },
+    };
+  }
+  // Promise of {kind, read(canvas) → Promise<{text, format}|null>}
+  function engine() {
+    if (enginePromise) return enginePromise;
+    enginePromise = Promise.resolve().then(() => {
+      const BD = window.BarcodeDetector;
+      if (!BD || typeof BD.getSupportedFormats !== "function") return null;
+      return BD.getSupportedFormats().then(sup => {
+        if (!sup.includes("code_128")) return null;
+        const det = new BD({formats: WANT.filter(f => sup.includes(f))});
+        return {kind: "builtin", read: canvas => det.detect(canvas).then(c => c.length ? {text: c[0].rawValue, format: BARCODE.FROM_DETECTOR[c[0].format] || null} : null, () => null)};
+      });
+    }).catch(() => null).then(e => e || loadZX().then(zxEngine));
+    enginePromise.catch(() => { enginePromise = null; });   // allow a retry after a failed download
+    return enginePromise;
+  }
+  // Draw a source (video or image) to a canvas, optionally rotated 90° (for barcodes held sideways).
+  // rotate: false/true (90°) or a number of degrees for small tilts
+  function toCanvas(src, w, h, rotate, max = 1280) {
+    const sc = Math.min(1, max / Math.max(w, h)), cw = Math.round(w * sc), ch = Math.round(h * sc);
+    const deg = rotate === true ? 90 : (rotate || 0), rad = deg * Math.PI / 180;
+    const cos = Math.abs(Math.cos(rad)), sin = Math.abs(Math.sin(rad));
+    const c = document.createElement("canvas");
+    c.width = Math.round(cw * cos + ch * sin); c.height = Math.round(cw * sin + ch * cos);
+    const ctx = c.getContext("2d", {willReadFrequently: true});
+    if (deg) { ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height); }
+    ctx.translate(c.width / 2, c.height / 2); ctx.rotate(rad);
+    ctx.drawImage(src, -cw / 2, -ch / 2, cw, ch);
+    return c;
+  }
+  // A photo or screenshot: try upright, then sideways.
+  function readFile(file) {
+    return engine().then(eng => new Promise((ok, fail) => {
+      const url = URL.createObjectURL(file), img = new Image();
+      img.onload = async () => {
+        URL.revokeObjectURL(url);
+        // upright and sideways first; then smaller sizes (sharper for blurry photos) and small tilts
+        const tries = [[0, 1600], [90, 1600], [0, 900], [90, 900], [0, 560], [90, 560],
+                       [-4, 900], [4, 900], [-8, 900], [8, 900], [86, 900], [94, 900], [82, 900], [98, 900]];
+        for (const [rot, size] of tries) {
+          const r = await eng.read(toCanvas(img, img.naturalWidth, img.naturalHeight, rot, size));
+          if (r) return ok(r);
+        }
+        ok(null);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); fail(new Error("Couldn't open that picture.")); };
+      img.src = url;
+    }));
+  }
+  return {engine, toCanvas, readFile};
+})();
+
+// Live camera scan. Falls back to picking a photo if the camera can't start.
+function GymScanner({onResult, onClose, onPhoto}) {
+  const videoRef = useRef(null);
+  const [msg, setMsg] = useState("Starting camera…");
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let stream = null, alive = true;
+    const fail = text => { if (alive) { setMsg(text); setFailed(true); } };
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { fail("The camera isn't available here. Choose a photo or screenshot of your barcode instead."); return; }
+    GYM_READER.engine().then(eng =>
+      navigator.mediaDevices.getUserMedia({video: {facingMode: "environment", width: {ideal: 1280}, height: {ideal: 720}}, audio: false}).then(s => {
+        stream = s; if (!alive) return s.getTracks().forEach(t => t.stop());
+        const v = videoRef.current; v.srcObject = s;
+        return v.play().then(() => {
+          setMsg("Point at the barcode on your card or key tag");
+          const tick = () => {
+            if (!alive) return;
+            if (v.readyState < 2 || !v.videoWidth) return setTimeout(tick, 150);
+            eng.read(GYM_READER.toCanvas(v, v.videoWidth, v.videoHeight, 0, 960)).then(r => {
+              if (!alive) return;
+              if (r && r.text) { if (navigator.vibrate) navigator.vibrate(60); onResult(r.text, r.format); }
+              else setTimeout(tick, eng.kind === "zxing" ? 60 : 150);
+            });
+          };
+          tick();
+        });
+      })
+    ).catch(e => fail(e && e.name === "NotAllowedError"
+      ? "Camera permission is off for this site. Allow Camera in your browser settings, or choose a photo of your barcode."
+      : (e && e.message && /reader/.test(e.message) ? e.message : "The camera couldn't start. Choose a photo or screenshot of your barcode instead.")));
+    return () => { alive = false; if (stream) stream.getTracks().forEach(t => t.stop()); };
+  }, []);
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Scan barcode" style={{position:"fixed", inset:0, zIndex:1000, background:"#000", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center"}}>
+      <div style={{position:"relative", width:"100%", maxWidth:480, display: failed ? "none" : "block"}}>
+        <video ref={videoRef} playsInline muted style={{width:"100%", maxHeight:"60vh", objectFit:"cover", display:"block"}}/>
+        <div aria-hidden="true" style={{position:"absolute", left:"8%", right:"8%", top:"50%", height:2, background:"#ff3b5c", boxShadow:"0 0 10px #ff3b5c"}}/>
+      </div>
+      <div style={{color:"#eee", fontFamily:"'DM Sans',sans-serif", fontSize:15, textAlign:"center", padding:"18px 24px", maxWidth:420, lineHeight:1.45}}>{msg}</div>
+      <div style={{display:"flex", gap:10}}>
+        <button onClick={onPhoto} style={{padding:"12px 20px", border:"1px solid #555", background:"transparent", color:"#fff", fontFamily:"'DM Sans',sans-serif", fontSize:15, fontWeight:600, cursor:"pointer"}}>Use a photo</button>
+        <button onClick={onClose} style={{padding:"12px 24px", border:"none", background:"#fff", color:"#111", fontFamily:"'DM Sans',sans-serif", fontSize:15, fontWeight:700, cursor:"pointer"}}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function shrinkImage(file) {
+  return new Promise((ok, fail) => {
+    const url = URL.createObjectURL(file), img = new Image();
+    img.onload = () => {
+      const max = 256, sc = Math.min(1, max / Math.max(img.width, img.height));
+      const c = document.createElement("canvas"); c.width = Math.round(img.width * sc); c.height = Math.round(img.height * sc);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url);
+      ok(c.toDataURL("image/png"));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); fail(new Error("Couldn't open that image.")); };
+    img.src = url;
+  });
+}
+
+function GymEditor({card, isNew, onSave, onDelete, onClose}) {
+  const [name, setName] = useState(card.name || "");
+  const [code, setCode] = useState(card.code || "");
+  const [format, setFormat] = useState(card.format || "code128");
+  const [logo, setLogo] = useState(card.logo || null);
+  const [svg, setSvg] = useState(null);
+  const [err, setErr] = useState("");
+  const [note, setNote] = useState("");
+  const [scanning, setScanning] = useState(false);
+  const fileRef = useRef(null);
+
+  useEffect(() => {
+    let live = true;
+    if (!code.trim()) { setSvg(null); setErr(""); return; }
+    BARCODE.render(format, code).then(s => { if (live) { setSvg(s); setErr(""); } }, e => { if (live) { setSvg(null); setErr(e.message); } });
+    return () => { live = false; };
+  }, [code, format]);
+
+  const onScan = (value, f) => {
+    setScanning(false); setCode(value);
+    if (f) { setFormat(f); setNote(""); }
+    else { setFormat("code128"); setNote("Your card uses a barcode type the app can't redraw, so it'll show as Code 128. Test it at the front desk; if it doesn't scan, try another type."); }
+  };
+  const photoRef = useRef(null);
+  const [reading, setReading] = useState(false);
+  const pickPhoto = async e => {
+    const f = e.target.files && e.target.files[0]; e.target.value = "";
+    if (!f) return;
+    setScanning(false); setReading(true); setErr(""); setNote("");
+    try {
+      const r = await GYM_READER.readFile(f);
+      if (r) onScan(r.text, r.format, true);
+      else setErr("Couldn't find a barcode in that picture. Crop or zoom so the barcode fills most of it, and try again.");
+    } catch (x) { setErr(x.message); }
+    setReading(false);
+  };
+  const pickLogo = async e => {
+    const f = e.target.files && e.target.files[0]; e.target.value = "";
+    if (!f) return;
+    try { setLogo(await shrinkImage(f)); } catch (x) { setErr(x.message); }
+  };
+  const save = () => {
+    if (!name.trim()) { setErr("Give this gym a name."); return; }
+    if (code.trim() && !svg) return;   // error already shown
+    onSave({...card, name: name.trim(), mono: card.mono && name.trim() === card.name ? card.mono : monogram(name), code: code.trim(), format, logo, svg: code.trim() ? svg : null});
+  };
+  const field = {width:"100%", padding:"12px 14px", background:P.inset, border:`1px solid rgba(${P.ink},0.22)`, color:P.text,
+    fontFamily:"'DM Sans',sans-serif", fontSize:16, outline:"none"};
+  const label = {fontFamily:"'DM Sans',sans-serif", fontSize:12, fontWeight:600, color:P.muted, margin:"14px 0 6px"};
+  const preview = {...card, name: name || "Gym", mono: monogram(name), logo};
+
+  return ReactDOM.createPortal(
+    <div role="dialog" aria-modal="true" aria-label={isNew ? "Add gym" : `Edit ${card.name}`}
+      style={{position:"fixed", inset:0, zIndex:900, background:"rgba(0,0,0,0.6)", display:"flex", alignItems:"flex-end", justifyContent:"center"}} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{width:"100%", maxWidth:480, maxHeight:"92vh", overflowY:"auto", background:P.bg, backgroundImage:P.layers,
+        borderRadius:"32px 32px 0 0", padding:"20px 18px calc(24px + env(safe-area-inset-bottom))", border:`1px solid rgba(${P.ink},0.16)`, color:P.text}}>
+        <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6}}>
+          <div style={{fontFamily:"'Barlow Condensed',sans-serif", fontSize:24, fontWeight:800}}>{isNew ? "Add gym" : "Edit gym"}</div>
+          <button onClick={onClose} aria-label="Close" style={{background:`rgba(${P.ink},0.1)`, border:"none", color:P.text, width:36, height:36, cursor:"pointer", fontSize:16}}>✕</button>
+        </div>
+
+        <div style={label}>Gym name</div>
+        <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g. UFC Gym" style={field}/>
+
+        <div style={label}>Logo</div>
+        <div style={{display:"flex", alignItems:"center", gap:12}}>
+          <GymLogo card={preview} size={52}/>
+          <button onClick={() => fileRef.current.click()} style={{padding:"10px 16px", background:`rgba(${P.ink},0.1)`, border:`1px solid rgba(${P.ink},0.2)`, color:P.text, fontFamily:"'DM Sans',sans-serif", fontSize:13, fontWeight:600, cursor:"pointer"}}>{logo ? "Change logo" : "Add logo"}</button>
+          {logo && <button onClick={() => setLogo(null)} style={{padding:"10px 14px", background:"transparent", border:"none", color:P.muted, fontFamily:"'DM Sans',sans-serif", fontSize:13, cursor:"pointer"}}>Remove</button>}
+          <input ref={fileRef} type="file" accept="image/*" hidden onChange={pickLogo}/>
+        </div>
+        <div style={{fontFamily:"'DM Sans',sans-serif", fontSize:11, color:P.faint, marginTop:6}}>Use a photo or screenshot of your card or the gym's logo.</div>
+
+        <div style={label}>Member number</div>
+        <div style={{display:"flex", gap:8}}>
+          <input value={code} onChange={e => { setCode(e.target.value); setNote(""); }} placeholder="Number under the barcode" inputMode="text" autoComplete="off" style={{...field, flex:1, letterSpacing:1}}/>
+          <button onClick={() => setScanning(true)} style={{padding:"0 16px", background:P.acc, border:"none", color:P.onAcc, fontFamily:"'DM Sans',sans-serif", fontSize:13, fontWeight:700, cursor:"pointer", whiteSpace:"nowrap"}}>Scan</button>
+        </div>
+        <button onClick={() => photoRef.current.click()} disabled={reading}
+          style={{marginTop:8, padding:"8px 14px", background:`rgba(${P.ink},0.08)`, border:`1px solid rgba(${P.ink},0.16)`, color:P.sub, fontFamily:"'DM Sans',sans-serif", fontSize:12, fontWeight:600, cursor:"pointer"}}>
+          {reading ? "Reading picture…" : "Read from a photo or screenshot"}
+        </button>
+        <input ref={photoRef} type="file" accept="image/*" hidden onChange={pickPhoto} data-role="barcode-photo"/>
+
+        <div style={label}>Barcode type</div>
+        <div role="radiogroup" aria-label="Barcode type" style={{display:"flex", flexWrap:"wrap", gap:6}}>
+          {BARCODE.FORMATS.map(f => (
+            <button key={f.id} role="radio" aria-checked={format === f.id} onClick={() => { setFormat(f.id); setNote(""); }}
+              style={{padding:"7px 12px", cursor:"pointer", fontFamily:"'DM Sans',sans-serif", fontSize:12, fontWeight:600,
+                background: format === f.id ? P.acc : `rgba(${P.ink},0.08)`, color: format === f.id ? P.onAcc : P.sub,
+                border: format === f.id ? "none" : `1px solid rgba(${P.ink},0.16)`}}>{f.name}</button>
+          ))}
+        </div>
+        <div style={{fontFamily:"'DM Sans',sans-serif", fontSize:11, color:P.faint, marginTop:6}}>Scanning picks this for you. Typed it in? Most gym tags are Code 128 or Code 39.</div>
+
+        {svg && (
+          <div style={{background:"#fff", borderRadius:20, padding:12, marginTop:14, height: format === "qr" ? 180 : 110, display:"flex", justifyContent:"center"}}
+            dangerouslySetInnerHTML={{__html: svg.replace("<svg ", '<svg width="100%" height="100%" ')}}/>
+        )}
+        {note && <div style={{fontFamily:"'DM Sans',sans-serif", fontSize:12, color:P.accSoft, marginTop:10, lineHeight:1.4}}>{note}</div>}
+        {err && <div role="alert" style={{fontFamily:"'DM Sans',sans-serif", fontSize:13, color:P.bad, marginTop:10}}>{err}</div>}
+
+        <div style={{display:"flex", gap:8, marginTop:18}}>
+          {!isNew && <button onClick={() => { if (confirm(`Remove ${card.name}?`)) onDelete(card.id); }} style={{padding:"13px 16px", background:"transparent", border:`1px solid rgba(${P.badRgb},0.45)`, color:P.bad, fontFamily:"'DM Sans',sans-serif", fontSize:14, fontWeight:600, cursor:"pointer"}}>Remove</button>}
+          <button onClick={save} style={{flex:1, padding:"13px", background:P.acc, border:"none", color:P.onAcc, fontFamily:"'DM Sans',sans-serif", fontSize:15, fontWeight:700, cursor:"pointer"}}>Save gym</button>
+        </div>
+      </div>
+      {scanning && <GymScanner onResult={onScan} onClose={() => setScanning(false)} onPhoto={() => photoRef.current.click()}/>}
+    </div>
+
+  , document.body);
+}
+
+function GymCardsCard() {
+  const [cards, setCards] = useState(loadGymCards);
+  const [showing, setShowing] = useState(null);   // card id
+  const [editing, setEditing] = useState(null);   // {card, isNew}
+  const persist = next => { setCards(next); try { localStorage.setItem(GYM_KEY, JSON.stringify(next)); } catch (e) { alert("Couldn't save. Try a smaller logo image."); } };
+  const open = c => c.code && c.svg ? setShowing(c.id) : setEditing({card: c, isNew: false});
+  const shown = cards.find(c => c.id === showing);
+
+  return (
+    <div style={{background:P.card, borderRadius:28, padding:"16px 16px 14px", border:`1px solid rgba(${P.ink},0.16)`}}>
+      <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12, padding:"0 2px"}}>
+        <div style={{fontFamily:"'Barlow Condensed',sans-serif", fontSize:20, fontWeight:800, color:P.text}}>Gym cards</div>
+        <button onClick={() => setEditing({card: {id: "g" + Date.now().toString(36), name: "", code: "", format: "code128", logo: null, svg: null}, isNew: true})}
+          style={{padding:"6px 14px", background:`rgba(${P.accRgb},0.14)`, border:`1px solid rgba(${P.accRgb},0.4)`, color:P.acc, fontFamily:"'DM Sans',sans-serif", fontSize:12, fontWeight:700, cursor:"pointer"}}>+ Add gym</button>
+      </div>
+      {cards.length === 0 && <div style={{fontFamily:"'DM Sans',sans-serif", fontSize:13, color:P.muted, padding:"4px 2px 6px"}}>Add your gym to keep its check-in barcode here.</div>}
+      <div style={{display:"flex", flexDirection:"column", gap:8}}>
+        {cards.map(c => (
+          <button key={c.id} onClick={() => open(c)} aria-label={c.code ? `Show ${c.name} pass` : `Add barcode for ${c.name}`}
+            style={{display:"flex", alignItems:"center", gap:12, width:"100%", padding:"10px 14px 10px 10px", textAlign:"left", cursor:"pointer",
+              background:`rgba(${P.ink},0.06)`, border:`1px solid rgba(${P.ink},0.12)`, color:P.text}}>
+            <GymLogo card={c} size={42}/>
+            <div style={{flex:1, minWidth:0}}>
+              <div style={{fontFamily:"'DM Sans',sans-serif", fontSize:15, fontWeight:700, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis"}}>{c.name}</div>
+              <div style={{fontFamily:"'DM Sans',sans-serif", fontSize:12, color: c.code ? P.muted : P.acc, marginTop:1}}>{c.code ? `•••• ${c.code.slice(-4)}` : "Add your barcode"}</div>
+            </div>
+            {c.code ? <span style={{fontFamily:"'DM Sans',sans-serif", fontSize:12, fontWeight:700, color:P.onAcc, background:P.acc, padding:"6px 12px", borderRadius:999}}>Show</span>
+                    : <span aria-hidden="true" style={{color:P.acc, fontSize:22, lineHeight:1}}>+</span>}
+          </button>
+        ))}
+      </div>
+      {shown && <GymPass card={shown} onClose={() => setShowing(null)} onEdit={() => { setShowing(null); setEditing({card: shown, isNew: false}); }}/>}
+      {editing && <GymEditor card={editing.card} isNew={editing.isNew}
+        onClose={() => setEditing(null)}
+        onDelete={id => { persist(cards.filter(c => c.id !== id)); setEditing(null); }}
+        onSave={c => { persist(editing.isNew ? [...cards, c] : cards.map(x => x.id === c.id ? c : x)); setEditing(null); if (c.code && c.svg) setShowing(c.id); }}/>}
+    </div>
+  );
+}
+
+function AppearanceCard() {
+  return (
+    <div style={{background: P.card, borderRadius: 28, padding: "16px 18px", border: `1px solid rgba(${P.ink},0.16)`}}>
+      <div style={{fontFamily: "'Barlow Condensed',sans-serif", fontSize: 20, fontWeight: 800, color: P.text, marginBottom: 2}}>Appearance</div>
+      <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: P.muted, marginBottom: 12}}>Pick a theme for this phone.</div>
+      <div role="radiogroup" aria-label="Theme" style={{display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8}}>
+        {Object.entries(THEMES).map(([id, t]) => {
+          const on = id === THEME_ID;
+          return (
+            <button key={id} role="radio" aria-checked={on} onClick={() => { if (!on) setTheme(id); }}
+              style={{display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", cursor: on ? "default" : "pointer",
+                background: on ? `rgba(${P.accRgb},0.14)` : `rgba(${P.ink},0.06)`,
+                border: on ? `2px solid ${P.acc}` : `1px solid rgba(${P.ink},0.16)`,
+                color: P.text, fontFamily: "'DM Sans',sans-serif", fontSize: 13, fontWeight: 600, textAlign: "left"}}>
+              <span aria-hidden="true" style={{width: 26, height: 26, borderRadius: 999, flexShrink: 0,
+                background: `linear-gradient(135deg, ${t.swatch[0]} 0 50%, ${t.swatch[1]} 50% 75%, ${t.swatch[2]} 75%)`,
+                border: `1px solid rgba(${P.ink},0.25)`}}/>
+              {t.name}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function WatchSettingsCard() {
+  const [kind, setKind] = useWatchKind();
+  const [adv, setAdv] = useState(false);
+  const [setupInfo, setSetupInfo] = useState(null);       // {url, code} for the Apple Watch app's Config.swift
+  const [urlInput, setUrlInput] = useState(() => FTW_DEFAULT_SYNC_URL || (window.FTWLive && FTWLive.config() ? FTWLive.config().url : ""));
+  const [msg, setMsg] = useState("");
+  const live = LiveStatus();
+  const paired = !!(window.FTWLive && FTWLive.isPaired()) || live !== "off";
+
+  const chooseKind = (k) => { if (k !== kind) { setKind(k); setMsg(""); setSetupInfo(null); } };
+  const setupApple = () => {
+    if (paired && !confirm("This phone is already linked to a watch. Make a new code? The current watch will stop syncing until it gets the new code.")) return;
+    const url = cleanSyncUrl(urlInput);
+    if (!url) { setMsg("Enter your Firebase database URL: the https://…firebaseio.com address."); return; }
+    setSetupInfo(FTWLive.createPair(url));
+    setMsg("");
+  };
+  const swiftLines = setupInfo ? `let SYNC_URL = "${setupInfo.url}"\nlet PAIR_CODE = "${setupInfo.code}"` : "";
+  const copySetup = () => {
+    (navigator.clipboard ? navigator.clipboard.writeText(swiftLines) : Promise.reject())
+      .then(() => setMsg("Copied. Paste both lines into Config.swift in the watch app."),
+            () => setMsg("Select the two lines above and copy them."));
+  };
+  const shareSetup = () => {
+    const text = "FitTracker Apple Watch setup: paste these two lines into Config.swift, then build and install:\n\n" + swiftLines;
+    if (navigator.share) navigator.share({ title: "FitTracker Apple Watch setup", text }).catch(() => {});
+    else copySetup();
+  };
+
+  const btn = (primary) => ({
+    flex: 1, padding: "11px 8px", borderRadius: 16, cursor: "pointer",
+    border: primary ? "none" : `1px solid rgba(${P.ink},0.22)`, background: primary ? `${P.acc}` : `rgba(${P.ink},0.13)`,
+    color: primary ? `${P.onAcc}` : `${P.text}`, fontFamily: "'Barlow Condensed',sans-serif", fontSize: 15, fontWeight: 800, letterSpacing: 1,
+  });
+  const small = {fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: `${P.sub}`, lineHeight: 1.45};
+
+  return (
+    <div style={{background: `${P.card}`, borderRadius: 28, padding: "16px 18px", border: `1px solid rgba(${P.ink},0.16)`}}>
+      <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: `${P.sub}`, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5}}>Watch</div>
+      <div style={{fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, fontWeight: 800, color: `${P.text}`, marginBottom: 2}}>WATCH SETTINGS</div>
+      <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: `${P.sub}`}}>Using: {WATCH_NAME[kind]}{paired ? " \u00b7 linked" : ""}</div>
+      <div onClick={() => setAdv(a => !a)} style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: `${P.faint}`, marginTop: 14, cursor: "pointer", userSelect: "none"}}>
+        {adv ? "▾" : "▸"} Advanced
+      </div>
+      {adv && (
+        <div style={{marginTop: 10, padding: "12px 14px", background: `${P.inset}`, border: `1px solid rgba(${P.ink},0.16)`, borderRadius: 20}}>
+          <div style={{...small, marginBottom: 8}}>Which watch does this phone use?</div>
+          <div style={{display: "flex", background: `${P.inset2}`, border: `1px solid rgba(${P.ink},0.16)`, borderRadius: 16, padding: 3, marginBottom: 12}}>
+            {["galaxy", "apple"].map(k => (
+              <button key={k} onClick={() => chooseKind(k)} style={{
+                flex: 1, padding: "7px 6px", borderRadius: 9, border: "none", cursor: "pointer",
+                background: kind === k ? `${P.acc}` : "transparent", color: kind === k ? `${P.onAcc}` : `${P.sub}`,
+                fontFamily: "'DM Sans',sans-serif", fontSize: 12, fontWeight: 700,
+              }}>{WATCH_NAME[k]}</button>
+            ))}
+          </div>
+
+          {kind === "galaxy" && (
+            <div style={small}>Pair from the Watch card on the Today screen.</div>
+          )}
+
+          {kind === "apple" && !setupInfo && (
+            <>
+              <div style={{...small, marginBottom: 10}}>
+                Apple Watch setup: this phone makes a private sync code, which goes into the watch app (Config.swift) before it's installed. After that the watch links up on its own.
+              </div>
+              {!FTW_DEFAULT_SYNC_URL && (
+                <input value={urlInput} onChange={e => setUrlInput(e.target.value)} placeholder="https://…firebaseio.com (database URL)"
+                  autoCapitalize="off" autoCorrect="off" spellCheck={false}
+                  style={{width: "100%", padding: "10px 12px", borderRadius: 14, border: `1px solid rgba(${P.ink},0.22)`, background: `${P.inset2}`, color: `${P.text}`,
+                          fontFamily: "'DM Sans',sans-serif", fontSize: 13, marginBottom: 8, outline: "none"}}/>
+              )}
+              <div style={{display: "flex", gap: 8}}>
+                <button onClick={setupApple} style={btn(true)}>{paired ? "NEW SETUP CODE" : "SET UP APPLE WATCH"}</button>
+                {paired && <button onClick={() => setSetupInfo(FTWLive.config())} style={btn(false)}>SHOW CODE</button>}
+              </div>
+            </>
+          )}
+
+          {kind === "apple" && setupInfo && (
+            <>
+              <div style={{fontFamily: "'Barlow Condensed',sans-serif", fontSize: 15, fontWeight: 800, color: `${P.acc}`, letterSpacing: 0.5, marginBottom: 4}}>WATCH APP SETUP CODE</div>
+              <div style={{...small, marginBottom: 8}}>Send these two lines to whoever installs the watch app. They replace the two lines in Config.swift. Keep them private.</div>
+              <pre style={{margin: 0, padding: 10, borderRadius: 14, background: `rgba(${P.ink},0.13)`, color: `${P.accSoft}`, fontSize: 11, lineHeight: 1.5,
+                           whiteSpace: "pre-wrap", wordBreak: "break-all", userSelect: "all", WebkitUserSelect: "all"}}>{swiftLines}</pre>
+              <div style={{display: "flex", gap: 8, marginTop: 10}}>
+                <button onClick={copySetup} style={btn(false)}>COPY</button>
+                <button onClick={shareSetup} style={btn(true)}>SHARE</button>
+                <button onClick={() => setSetupInfo(null)} style={{...btn(false), flex: "none", padding: "11px 12px"}}>DONE</button>
+              </div>
+            </>
+          )}
+          {msg && <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: `${P.acc}`, marginTop: 10, lineHeight: 1.4}}>{msg}</div>}
+        </div>
+      )}
     </div>
   );
 }
 
 /* ─── WATCH IMPORT (Progress tab settings — scan/Bluetooth a finished workout off the watch) ── */
 function WatchImportCard({ logs, setLogs, onCelebrate }) {
+  const [kind] = useWatchKind();
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const logsRef = useRef(logs);
@@ -1220,21 +1931,22 @@ function WatchImportCard({ logs, setLogs, onCelebrate }) {
   };
 
   const btn = (primary) => ({
-    flex: 1, padding: "12px 8px", borderRadius: 12, cursor: busy ? "default" : "pointer",
-    border: primary ? "none" : "1px solid #2a2a3e", background: primary ? "#f0b429" : "#1a1a2e",
-    color: primary ? "#000" : "#fff", opacity: busy ? 0.5 : 1,
+    flex: 1, padding: "12px 8px", borderRadius: 16, cursor: busy ? "default" : "pointer",
+    border: primary ? "none" : `1px solid rgba(${P.ink},0.22)`, background: primary ? `${P.acc}` : `rgba(${P.ink},0.13)`,
+    color: primary ? `${P.onAcc}` : `${P.text}`, opacity: busy ? 0.5 : 1,
     fontFamily: "'Barlow Condensed',sans-serif", fontSize: 16, fontWeight: 800, letterSpacing: 1,
   });
 
+  if (kind !== "galaxy") return null;    // QR / Bluetooth import only exists on the Galaxy watch app
   return (
-    <div style={{background: "#111120", borderRadius: 20, padding: "16px 18px", border: "1px solid #1a1a2e"}}>
-      <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: "#888aaa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5}}>⌚ Galaxy Watch</div>
-      <div style={{fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, fontWeight: 800, color: "#fff", marginBottom: 12}}>IMPORT A FINISHED WORKOUT</div>
+    <div style={{background: `${P.card}`, borderRadius: 28, padding: "16px 18px", border: `1px solid rgba(${P.ink},0.16)`}}>
+      <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: `${P.sub}`, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5}}>⌚ Galaxy Watch</div>
+      <div style={{fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, fontWeight: 800, color: `${P.text}`, marginBottom: 12}}>IMPORT A FINISHED WORKOUT</div>
       <div style={{display: "flex", gap: 8}}>
         <button disabled={busy} onClick={scan} style={btn(false)}>📷 SCAN CODE</button>
         <button disabled={busy || !hasBt} onClick={bluetooth} style={btn(false)}>{hasBt ? "🔵 BLUETOOTH" : "BLUETOOTH: CHROME ONLY"}</button>
       </div>
-      {status && <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: "#f0b429", marginTop: 10, lineHeight: 1.4}}>{status}</div>}
+      {status && <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: `${P.acc}`, marginTop: 10, lineHeight: 1.4}}>{status}</div>}
     </div>
   );
 }
@@ -1246,7 +1958,7 @@ function Celebration({ data, onDone }) {
     left: Math.random() * 100,
     delay: Math.random() * 1.5,
     dur: 2 + Math.random() * 2,
-    color: ["#f0b429","#ff6b6b","#39d98a","#4fc3f7","#bb8fce","#ffffff"][i % 6],
+    color: [`${P.acc}`,`${P.bad}`,`${P.good}`,`${P.info}`,`${P.purple}`,`${P.text}`][i % 6],
     size: 6 + Math.random() * 10,
     shape: i % 3,
   }));
@@ -1265,9 +1977,9 @@ function Celebration({ data, onDone }) {
       ))}
       <div style={{textAlign:"center", animation:"pop 0.5s ease both", zIndex:1}}>
         <div style={{fontSize:80, marginBottom:16, animation:"float 2s ease-in-out infinite"}}>{data.emoji}</div>
-        <div style={{fontFamily:"'Barlow Condensed',sans-serif", fontSize:48, fontWeight:900, color:"#f0b429", letterSpacing:2, textTransform:"uppercase", filter:"drop-shadow(0 0 24px rgba(240,180,41,0.7))"}}><ShinyText speed={2}>{data.title}</ShinyText></div>
-        <div style={{fontFamily:"'DM Sans',sans-serif", fontSize:18, color:"rgba(255,255,255,0.8)", marginTop:12, maxWidth:320}}>{data.msg}</div>
-        <div style={{marginTop:24, fontSize:13, color:"rgba(255,255,255,0.4)"}}>Tap anywhere to continue</div>
+        <div style={{fontFamily:"'Barlow Condensed',sans-serif", fontSize:48, fontWeight:900, color:`${P.acc}`, letterSpacing:2, textTransform:"uppercase", filter:`drop-shadow(0 0 24px rgba(${P.accRgb},0.7))`}}><ShinyText speed={2}>{data.title}</ShinyText></div>
+        <div style={{fontFamily:"'DM Sans',sans-serif", fontSize:18, color:`rgba(${P.ink},0.8)`, marginTop:12, maxWidth:320}}>{data.msg}</div>
+        <div style={{marginTop:24, fontSize:13, color:`rgba(${P.ink},0.4)`}}>Tap anywhere to continue</div>
       </div>
     </div>
   );
@@ -1293,7 +2005,7 @@ function CountUp({ to = 0, decimals = 0, duration = 1, prefix = "", suffix = "" 
 }
 
 // Shiny Text: a light sweep across gradient-clipped text
-function ShinyText({ children, color = "#f0b429", shine = "#fff4cc", speed = 3.5 }) {
+function ShinyText({ children, color = `${P.acc}`, shine = `${P.shine}`, speed = 3.5 }) {
   return (
     <span style={{
       backgroundImage: `linear-gradient(110deg, ${color} 40%, ${shine} 50%, ${color} 60%)`,
@@ -1305,7 +2017,7 @@ function ShinyText({ children, color = "#f0b429", shine = "#fff4cc", speed = 3.5
 }
 
 // Spotlight Card: a soft glow that follows your finger or pointer
-function SpotlightCard({ children, glow = "rgba(240,180,41,0.18)", style, onClick }) {
+function SpotlightCard({ children, glow = `rgba(${P.accRgb},0.18)`, style, onClick }) {
   const ref = useRef(null);
   const move = (e) => {
     const r = ref.current.getBoundingClientRect();
@@ -1364,7 +2076,32 @@ function FlipPanel({ open, flipped, front, back }) {
 }
 
 /* ─── PROGRESS RING ──────────────────────────────────────────────────────── */
-function Ring({ pct=0, color="#f0b429", size=80, stroke=7, children }) {
+/* Minimal stroke icons (navigation, category tabs) */
+const ICON_PATHS = {
+  home:     "M3.5 10.5 12 3.5l8.5 7V20a1 1 0 0 1-1 1H15v-6.5H9V21H4.5a1 1 0 0 1-1-1z",
+  log:      "M8 4.5H6.5A1.5 1.5 0 0 0 5 6v14a1.5 1.5 0 0 0 1.5 1.5h11A1.5 1.5 0 0 0 19 20V6a1.5 1.5 0 0 0-1.5-1.5H16 M9 3h6v3H9z M8.5 13.5l2.5 2.5 4.5-5",
+  calendar: "M5.5 5h13A2 2 0 0 1 20.5 7v12a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z M3.5 10h17 M8 3v4 M16 3v4",
+  progress: "M3.5 17.5 9 12l4 4 7.5-7.5 M15 8.5h5.5V14",
+  dumbbell: "M6.5 7v10 M17.5 7v10 M3.5 9.5v5 M20.5 9.5v5 M6.5 12h11",
+  meals:    "M7 3v6.5a2 2 0 0 0 2 2h0a2 2 0 0 0 2-2V3 M9 11.5V21 M17 21V3c-2 0-3.5 2.2-3.5 5.5S15 13 17 13",
+  pill:     "M10.6 20.4a4.6 4.6 0 0 1-6.5-6.5l9.8-9.8a4.6 4.6 0 0 1 6.5 6.5z M8.7 8.7l6.6 6.6",
+  scale:    "M7 3.5h10A3.5 3.5 0 0 1 20.5 7v10a3.5 3.5 0 0 1-3.5 3.5H7A3.5 3.5 0 0 1 3.5 17V7A3.5 3.5 0 0 1 7 3.5z M8 10a5 5 0 0 1 8 0 M12 10.5 13.5 8",
+};
+function Icon({ name, size = 22, sw = 1.8 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={sw}
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {ICON_PATHS[name].split(" M").map((d, i) => <path key={i} d={(i ? "M" : "") + d}/>)}
+    </svg>
+  );
+}
+
+const FOCAL_GRADIENT = P.focal;   // neon cyan → violet → magenta, for key insights only
+let _ringId = 0;
+
+function Ring({ pct=0, color=`${P.acc}`, size=80, stroke=7, children }) {
+  const gid = useRef("ringg" + (++_ringId)).current;
+  const isGrad = color === "gradient";
   const r = (size - stroke*2) / 2;
   const circ = 2 * Math.PI * r;
   // start empty and fill on the next frame, so rings sweep in when a screen opens
@@ -1374,8 +2111,15 @@ function Ring({ pct=0, color="#f0b429", size=80, stroke=7, children }) {
   return (
     <div style={{position:"relative",width:size,height:size,flexShrink:0}}>
       <svg width={size} height={size} style={{transform:"rotate(-90deg)"}}>
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth={stroke}/>
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={pct>0?color:"transparent"} strokeWidth={stroke}
+        {isGrad && (
+          <defs>
+            <linearGradient id={gid} x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stopColor={FOCAL_GRADIENT[0]}/><stop offset="55%" stopColor={FOCAL_GRADIENT[1]}/><stop offset="100%" stopColor={FOCAL_GRADIENT[2]}/>
+            </linearGradient>
+          </defs>
+        )}
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={`rgba(${P.ink},0.08)`} strokeWidth={stroke}/>
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={pct>0?(isGrad?`url(#${gid})`:color):"transparent"} strokeWidth={stroke}
           strokeDasharray={circ} strokeDashoffset={dash} strokeLinecap="round"
           style={{transition:"stroke-dashoffset 0.8s ease"}}/>
       </svg>
@@ -1387,22 +2131,18 @@ function Ring({ pct=0, color="#f0b429", size=80, stroke=7, children }) {
 /* ─── NAV ────────────────────────────────────────────────────────────────── */
 function Nav({ view, setView }) {
   const tabs = [
-    {id:"dashboard", icon:"⚡", label:"Today"},
-    {id:"log",       icon:"✅", label:"Log"},
-    {id:"calendar",  icon:"📅", label:"Calendar"},
-    {id:"progress",  icon:"📈", label:"Progress"},
+    {id:"dashboard", icon:"home",     label:"Today"},
+    {id:"log",       icon:"log",      label:"Log"},
+    {id:"calendar",  icon:"calendar", label:"Calendar"},
+    {id:"progress",  icon:"progress", label:"Progress"},
   ];
   return (
-    <nav style={{display:"flex",background:"#0e0e1c",borderTop:"1px solid #1a1a2e",position:"sticky",bottom:0,zIndex:50}}>
+    <nav className="nav-float" aria-label="Main">
       {tabs.map(t => (
-        <button key={t.id} onClick={() => setView(t.id)} style={{
-          flex:1, padding:"12px 4px 10px", display:"flex",flexDirection:"column",alignItems:"center",gap:3,
-          background:"none", border:"none", cursor:"pointer", transition:"all 0.2s",
-          color: view===t.id ? "#f0b429" : "#555577",
-        }}>
-          <span style={{fontSize:20}}>{t.icon}</span>
-          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,fontWeight:600,letterSpacing:0.5,textTransform:"uppercase"}}>{t.label}</span>
-          {view===t.id && <div style={{width:20,height:2,background:"#f0b429",borderRadius:1,marginTop:1}}/>}
+        <button key={t.id} onClick={() => setView(t.id)} className={"nav-tab" + (view===t.id ? " on" : "")}
+          aria-current={view===t.id ? "page" : undefined}>
+          <Icon name={t.icon} size={22}/>
+          <span>{t.label}</span>
         </button>
       ))}
     </nav>
@@ -1565,30 +2305,30 @@ function DataCard({ logs, setLogs, onCelebrate }) {
   };
 
   const btn = (bg, fg) => ({
-    flex: 1, padding: "11px 8px", borderRadius: 12, border: "1px solid #2a2a3e", cursor: "pointer",
+    flex: 1, padding: "11px 8px", borderRadius: 16, border: `1px solid rgba(${P.ink},0.22)`, cursor: "pointer",
     background: bg, color: fg, fontFamily: "'Barlow Condensed',sans-serif", fontSize: 15, fontWeight: 800, letterSpacing: 1,
   });
 
   return (
-    <div style={{ background: "#111120", borderRadius: 20, padding: "16px 18px", border: "1px solid #1a1a2e" }}>
-      <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: "#888aaa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Data</div>
-      <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, fontWeight: 800, color: "#fff", marginBottom: 4 }}>BACKUP & RESTORE</div>
-      <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: "#888aaa", marginBottom: 12 }}>{dayCount} day{dayCount === 1 ? "" : "s"} logged on this phone</div>
+    <div style={{ background: `${P.card}`, borderRadius: 28, padding: "16px 18px", border: `1px solid rgba(${P.ink},0.16)` }}>
+      <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: `${P.sub}`, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Data</div>
+      <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, fontWeight: 800, color: `${P.text}`, marginBottom: 4 }}>BACKUP & RESTORE</div>
+      <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: `${P.sub}`, marginBottom: 12 }}>{dayCount} day{dayCount === 1 ? "" : "s"} logged on this phone</div>
       <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-        <button onClick={doExport} style={btn("#1a1a2e", "#fff")}>⬇ EXPORT</button>
-        <button onClick={() => fileRef.current && fileRef.current.click()} style={btn("#f0b429", "#000")}>⬆ IMPORT</button>
+        <button onClick={doExport} style={btn(`rgba(${P.ink},0.13)`, `${P.text}`)}>⬇ EXPORT</button>
+        <button onClick={() => fileRef.current && fileRef.current.click()} style={btn(`${P.acc}`, `${P.onAcc}`)}>⬆ IMPORT</button>
       </div>
       <input ref={fileRef} type="file" accept="application/json,.json,.csv,text/csv" onChange={onFile} style={{ display: "none" }} />
-      {msg && <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: "#f0b429", marginTop: 10, lineHeight: 1.4 }}>{msg}</div>}
-      <div onClick={() => setAdv(a => !a)} style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: "#444466", marginTop: 14, cursor: "pointer", userSelect: "none" }}>
+      {msg && <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: `${P.acc}`, marginTop: 10, lineHeight: 1.4 }}>{msg}</div>}
+      <div onClick={() => setAdv(a => !a)} style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: `${P.faint}`, marginTop: 14, cursor: "pointer", userSelect: "none" }}>
         {adv ? "▾" : "▸"} Advanced
       </div>
       {adv && (
-        <div style={{ marginTop: 10, padding: "12px 14px", background: "#16101a", border: "1px solid #3a2030", borderRadius: 14 }}>
-          <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: "#888aaa", lineHeight: 1.45, marginBottom: 10 }}>
+        <div style={{ marginTop: 10, padding: "12px 14px", background: "#2a1a1c", border: `1px solid rgba(${P.badRgb},0.45)`, borderRadius: 20 }}>
+          <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: `${P.sub}`, lineHeight: 1.45, marginBottom: 10 }}>
             Danger zone. Clearing wipes every logged workout on this phone and can't be undone — export a backup first.
           </div>
-          <button onClick={clearAll} style={{ ...btn("#1a1a2e", "#ff6b6b"), width: "100%", borderColor: "#3a2030" }}>🗑 CLEAR ALL DATA</button>
+          <button onClick={clearAll} style={{ ...btn(`rgba(${P.ink},0.13)`, `${P.bad}`), width: "100%", borderColor: "#4a2a2e" }}>🗑 CLEAR ALL DATA</button>
         </div>
       )}
     </div>
@@ -1636,30 +2376,32 @@ function Dashboard({ logs, profile, setView, setSelectedDate, setLogs, onCelebra
       {/* Header */}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
         <div>
-          <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:13,color:"#888aaa",fontWeight:500}}>{dateLabel}</div>
-          <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:36,fontWeight:900,color:"#ffffff",letterSpacing:1,lineHeight:1.1}}>YOUR GAINS<br/><ShinyText>DASHBOARD</ShinyText></div>
+          <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:13,color:`${P.sub}`,fontWeight:500}}>{dateLabel}</div>
+          <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:36,fontWeight:900,color:`${P.text}`,letterSpacing:1,lineHeight:1.1}}>YOUR GAINS<br/><ShinyText>DASHBOARD</ShinyText></div>
         </div>
         {streak > 0 && (
           <div style={{textAlign:"center",animation:"streakBounce 2s ease-in-out infinite"}}>
             <div style={{fontSize:32}}>🔥</div>
-            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:22,fontWeight:800,color:"#ff6b6b"}}><CountUp to={streak}/></div>
-            <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:"#888aaa"}}>DAY STREAK</div>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:22,fontWeight:800,color:`${P.bad}`}}><CountUp to={streak}/></div>
+            <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:`${P.sub}`}}>DAY STREAK</div>
           </div>
         )}
       </div>
 
       {/* Today's workout card */}
-      <SpotlightCard onClick={quickLog} glow={`${plan.color}33`} style={{background:`linear-gradient(135deg, ${plan.color}22, ${plan.color}08)`,border:`1px solid ${plan.color}44`,borderRadius:20,padding:"18px 20px",cursor:"pointer"}}>
-        <div style={{position:"absolute",right:-10,top:-10,fontSize:80,opacity:0.08}}>{plan.emoji}</div>
+      <SpotlightCard onClick={quickLog} glow={`${P.glow2}`} style={{background:`${P.card}`,borderRadius:28,padding:"20px 20px 18px",cursor:"pointer"}}>
+        <div aria-hidden="true" style={{position:"absolute",right:-70,top:-90,width:250,height:250,borderRadius:"50%",pointerEvents:"none",
+          background:`conic-gradient(from 210deg, ${FOCAL_GRADIENT[0]}, ${FOCAL_GRADIENT[1]}, ${FOCAL_GRADIENT[2]}, ${FOCAL_GRADIENT[0]})`,
+          filter:"blur(46px)",opacity:0.55}}/>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
           <div>
-            <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:plan.color,fontWeight:600,textTransform:"uppercase",letterSpacing:1}}>TODAY'S WORKOUT</div>
-            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:800,color:"#fff",marginTop:2}}>{plan.name}</div>
-            <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:13,color:"rgba(255,255,255,0.5)",marginTop:2}}>{plan.sub}</div>
+            <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:13,color:`${P.sub}`,fontWeight:500}}>Today's workout</div>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:800,color:`${P.text}`,marginTop:2}}>{plan.name}</div>
+            <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:13,color:`rgba(${P.ink},0.5)`,marginTop:2}}>{plan.sub}</div>
           </div>
           {wPct !== null ? (
-            <Ring pct={wPct} color={plan.color} size={72} stroke={6}>
-              <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:18,fontWeight:800,color:"#fff"}}><CountUp to={wPct} suffix="%"/></span>
+            <Ring pct={wPct} color="gradient" size={76} stroke={7}>
+              <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:18,fontWeight:800,color:`${P.text}`}}><CountUp to={wPct} suffix="%"/></span>
             </Ring>
           ) : (
             <div style={{fontSize:40}}>{plan.emoji}</div>
@@ -1671,14 +2413,17 @@ function Dashboard({ logs, profile, setView, setSelectedDate, setLogs, onCelebra
               <div key={ex.id} style={{
                 width:28,height:28,borderRadius:8,fontSize:11,
                 display:"flex",alignItems:"center",justifyContent:"center",
-                background:(log.workouts||{})[ex.id] ? plan.color : "rgba(255,255,255,0.07)",
-                color:(log.workouts||{})[ex.id] ? "#000" : "rgba(255,255,255,0.3)",
+                background:(log.workouts||{})[ex.id] ? plan.color : `rgba(${P.ink},0.07)`,
+                color:(log.workouts||{})[ex.id] ? `${P.onAcc}` : `rgba(${P.ink},0.3)`,
                 fontWeight:700, transition:"all 0.2s",
               }}>✓</div>
             ))}
           </div>
         )}
       </SpotlightCard>
+
+      {/* Gym check-in barcodes */}
+      <GymCardsCard/>
 
       {/* Watch sync */}
       {window.FTWLive && FTWLive.isPaired() && <ActivityCard activity={activity}/>}
@@ -1687,48 +2432,48 @@ function Dashboard({ logs, profile, setView, setSelectedDate, setLogs, onCelebra
       {/* Macro rings row */}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
         {[
-          {label:"Workouts", pct: wPct??0, color:"#ff6b6b", val:`${doneEx}/${totalEx}`, icon:"💪"},
-          {label:"Meals",    pct: mPct,    color:"#39d98a", val:`${doneMeals}/${MEALS.length}`, icon:"🍽️"},
-          {label:"Supps",    pct: sPct,    color:"#4fc3f7", val:`${doneSupps}/${SUPPLEMENTS.length}`, icon:"💊"},
+          {label:"Workouts", pct: wPct??0, color:`${P.bad}`, val:`${doneEx}/${totalEx}`, icon:"💪"},
+          {label:"Meals",    pct: mPct,    color:`${P.good}`, val:`${doneMeals}/${MEALS.length}`, icon:"🍽️"},
+          {label:"Supps",    pct: sPct,    color:`${P.info}`, val:`${doneSupps}/${SUPPLEMENTS.length}`, icon:"💊"},
         ].map(item => (
-          <div key={item.label} onClick={quickLog} style={{background:"#111120",borderRadius:16,padding:"16px 12px",display:"flex",flexDirection:"column",alignItems:"center",gap:8,cursor:"pointer",border:"1px solid #1a1a2e"}}>
+          <div key={item.label} onClick={quickLog} style={{background:`${P.card}`,borderRadius:24,padding:"16px 12px",display:"flex",flexDirection:"column",alignItems:"center",gap:8,cursor:"pointer",border:`1px solid rgba(${P.ink},0.16)`}}>
             <Ring pct={item.pct} color={item.color} size={60} stroke={5}>
               <span style={{fontSize:16}}>{item.icon}</span>
             </Ring>
-            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:800,color:item.pct===100?"#39d98a":"#fff"}}>{item.val}</div>
-            <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:"#555577",fontWeight:600,textTransform:"uppercase",letterSpacing:0.5}}>{item.label}</div>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:800,color:item.pct===100?`${P.good}`:`${P.text}`}}>{item.val}</div>
+            <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:`${P.muted}`,fontWeight:600,textTransform:"uppercase",letterSpacing:0.5}}>{item.label}</div>
           </div>
         ))}
       </div>
 
       {/* Muscle gain progress */}
-      <div style={{background:"#111120",borderRadius:20,padding:20,border:"1px solid #1a1a2e"}}>
+      <div style={{background:`${P.card}`,borderRadius:28,padding:20,border:`1px solid rgba(${P.ink},0.16)`}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
           <div>
-            <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:"#888aaa",fontWeight:600,textTransform:"uppercase",letterSpacing:0.5}}>MUSCLE GAIN GOAL</div>
-            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:26,fontWeight:800,color:"#fff"}}>
-              {gained > 0 ? <><span style={{color:"#f0b429"}}><CountUp to={gained} decimals={1} prefix="+" suffix=" lbs"/></span> gained</> : "Start logging weight →"}
+            <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:`${P.sub}`,fontWeight:600,textTransform:"uppercase",letterSpacing:0.5}}>MUSCLE GAIN GOAL</div>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:26,fontWeight:800,color:`${P.text}`}}>
+              {gained > 0 ? <><span style={{color:`${P.acc}`}}><CountUp to={gained} decimals={1} prefix="+" suffix=" lbs"/></span> gained</> : "Start logging weight →"}
             </div>
           </div>
           <div style={{textAlign:"right"}}>
-            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:18,fontWeight:700,color:"#39d98a"}}>{gainPct}%</div>
-            <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:"#555577"}}>of goal</div>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:18,fontWeight:700,color:`${P.good}`}}>{gainPct}%</div>
+            <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:`${P.muted}`}}>of goal</div>
           </div>
         </div>
-        <div style={{height:10,background:"rgba(255,255,255,0.06)",borderRadius:5,overflow:"hidden"}}>
-          <div style={{height:"100%",width:`${gainPct}%`,background:"linear-gradient(90deg,#f0b429,#ff6b6b)",borderRadius:5,transition:"width 1s ease"}}/>
+        <div style={{height:10,background:`rgba(${P.ink},0.06)`,borderRadius:5,overflow:"hidden"}}>
+          <div style={{height:"100%",width:`${gainPct}%`,background:`linear-gradient(90deg,${P.acc},${P.bad})`,borderRadius:5,transition:"width 1s ease"}}/>
         </div>
         <div style={{display:"flex",justifyContent:"space-between",marginTop:6}}>
-          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:"#555577"}}>{profile.startWeight} lbs</span>
-          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:"#555577"}}>Goal: {profile.startWeight+20} lbs</span>
+          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:`${P.muted}`}}>{profile.startWeight} lbs</span>
+          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:`${P.muted}`}}>Goal: {profile.startWeight+20} lbs</span>
         </div>
       </div>
 
       {/* Weight entry shortcut */}
-      <div onClick={quickLog} style={{background:"linear-gradient(135deg,#1a1a2e,#111120)",borderRadius:16,padding:"14px 18px",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",border:"1px solid #2a2a3e"}}>
+      <div onClick={quickLog} style={{background:`linear-gradient(135deg,rgba(${P.ink},0.13),${P.card})`,borderRadius:24,padding:"14px 18px",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",border:`1px solid rgba(${P.ink},0.22)`}}>
         <div>
-          <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:"#888aaa"}}>Today's weight</div>
-          <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:24,fontWeight:800,color:"#fff"}}>{log.weight ? `${log.weight} lbs` : "— Not logged yet"}</div>
+          <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:`${P.sub}`}}>Today's weight</div>
+          <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:24,fontWeight:800,color:`${P.text}`}}>{log.weight ? `${log.weight} lbs` : "— Not logged yet"}</div>
         </div>
         <div style={{fontSize:28}}>⚖️</div>
       </div>
@@ -1781,7 +2526,7 @@ function TimerIsland({ timer, onStop, onCancel, onAdjust }) {
   const mins     = Math.floor(remaining / 60);
   const secs     = remaining % 60;
   const timeStr  = mins > 0 ? `${mins}:${String(secs).padStart(2,"0")}` : `${remaining}`;
-  const col      = done ? "#39d98a" : remaining <= 5 ? "#ff6b6b" : remaining <= 15 ? "#f0b429" : timer.color;
+  const col      = done ? `${P.good}` : remaining <= 5 ? `${P.bad}` : remaining <= 15 ? `${P.acc}` : timer.color;
   const urgent   = remaining <= 5 && !done;
 
   // Arc for the pill outline
@@ -1802,7 +2547,7 @@ function TimerIsland({ timer, onStop, onCancel, onAdjust }) {
       <div style={{
         position:"relative",
         width:W, height:H,
-        background:"#08080f",
+        background:`${P.island}`,
         borderRadius:R,
         display:"flex", alignItems:"center",
         padding: expanded ? "0 14px" : "0 10px",
@@ -1846,13 +2591,13 @@ function TimerIsland({ timer, onStop, onCancel, onAdjust }) {
         </div>
 
         {/* Separator */}
-        <div style={{width:1,height:14,background:"rgba(255,255,255,0.1)",flexShrink:0}}/>
+        <div style={{width:1,height:14,background:`rgba(${P.ink},0.1)`,flexShrink:0}}/>
 
         {/* Countdown */}
         <div style={{
           fontFamily:"'Barlow Condensed',sans-serif",
           fontSize: expanded ? 22 : 17,
-          fontWeight:900, color:"#fff", letterSpacing:-0.5,
+          fontWeight:900, color:`${P.text}`, letterSpacing:-0.5,
           lineHeight:1, flexShrink:0,
           transition:"font-size 0.2s",
           animation: urgent ? "streakBounce 0.4s ease-in-out infinite" : "none",
@@ -1860,7 +2605,7 @@ function TimerIsland({ timer, onStop, onCancel, onAdjust }) {
 
         {/* same countdown is on the watch right now */}
         {linked && !done && (
-          <div title="Synced with your watch" style={{fontSize:11,color:"#39d98a",flexShrink:0,display:"flex",alignItems:"center",gap:2,fontFamily:"'Barlow Condensed',sans-serif",fontWeight:800,letterSpacing:0.5}}>
+          <div title="Synced with your watch" style={{fontSize:11,color:`${P.good}`,flexShrink:0,display:"flex",alignItems:"center",gap:2,fontFamily:"'Barlow Condensed',sans-serif",fontWeight:800,letterSpacing:0.5}}>
             ⌚{!expanded && <span>SYNCED</span>}
           </div>
         )}
@@ -1868,7 +2613,7 @@ function TimerIsland({ timer, onStop, onCancel, onAdjust }) {
         {/* Exercise name — only when expanded */}
         {expanded && (
           <div style={{
-            fontFamily:"'DM Sans',sans-serif", fontSize:11, color:"rgba(255,255,255,0.45)",
+            fontFamily:"'DM Sans',sans-serif", fontSize:11, color:`rgba(${P.ink},0.45)`,
             overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", flex:1,
             animation:"fadeUp 0.2s ease",
           }}>{timer.exercise.name}</div>
@@ -1881,13 +2626,13 @@ function TimerIsland({ timer, onStop, onCancel, onAdjust }) {
             {[-15, 15].map(d => (
               <button key={d} aria-label={`${d > 0 ? "Add" : "Remove"} 15 seconds`} onClick={e=>{e.stopPropagation();onAdjust && onAdjust(d);}} style={{
                 padding:"3px 7px",borderRadius:6,border:"none",cursor:"pointer",
-                background:"rgba(255,255,255,0.08)", color:"#888aaa",
+                background:`rgba(${P.ink},0.08)`, color:`${P.sub}`,
                 fontFamily:"'Barlow Condensed',sans-serif",fontSize:12,fontWeight:800,
               }}>{d > 0 ? "+15" : "−15"}</button>
             ))}
             <button onClick={e=>{e.stopPropagation();(onCancel||onStop)();}} style={{
               padding:"3px 8px",borderRadius:6,border:"none",cursor:"pointer",
-              background:"rgba(255,255,255,0.05)",color:"#555577",
+              background:`rgba(${P.ink},0.05)`,color:`${P.muted}`,
               fontFamily:"'Barlow Condensed',sans-serif",fontSize:12,fontWeight:800,
             }}>✕</button>
           </div>
@@ -1931,10 +2676,10 @@ function PyramidSuggestion({ exercise, numSets, lastSessionSets, planColor, alwa
     <div style={{
       display:"flex",alignItems:"center",gap:6,
       margin:"0 14px 8px",padding:"6px 12px",
-      background:"rgba(255,255,255,0.03)",borderRadius:10,
+      background:`rgba(${P.ink},0.03)`,borderRadius:14,
     }}>
       <span style={{fontSize:12}}>📊</span>
-      <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:"#444466"}}>
+      <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:`${P.faint}`}}>
         Log weights below — pyramid suggestions appear next session
       </span>
     </div>
@@ -1947,7 +2692,7 @@ function PyramidSuggestion({ exercise, numSets, lastSessionSets, planColor, alwa
       padding:"6px 12px",
       background:`${planColor}14`,
       border:`1px solid ${planColor}33`,
-      borderRadius:10, cursor:"pointer", width:"calc(100% - 28px)",
+      borderRadius:14, cursor:"pointer", width:"calc(100% - 28px)",
       justifyContent:"center",
     }}>
       <span style={{fontSize:13}}>📊</span>
@@ -1958,22 +2703,22 @@ function PyramidSuggestion({ exercise, numSets, lastSessionSets, planColor, alwa
   );
 
   return (
-    <div style={{margin:"0 14px 8px",background:`${planColor}0d`,border:`1px solid ${planColor}33`,borderRadius:12,overflow:"hidden"}}>
+    <div style={{margin:"0 14px 8px",background:`${planColor}0d`,border:`1px solid ${planColor}33`,borderRadius:16,overflow:"hidden"}}>
       <div style={{display:"flex",alignItems:"center",gap:6,padding:"7px 12px",borderBottom:`1px solid ${planColor}18`}}>
         <span style={{fontSize:12}}>📊</span>
         <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,fontWeight:600,color:planColor}}>Pyramid · Based on last session</span>
-        {!alwaysOpen && <button onClick={()=>setOpen(false)} style={{marginLeft:"auto",background:"none",border:"none",color:"#333355",cursor:"pointer",fontSize:13,padding:"2px 4px"}}>✕</button>}
+        {!alwaysOpen && <button onClick={()=>setOpen(false)} style={{marginLeft:"auto",background:"none",border:"none",color:`rgba(${P.ink},0.3)`,cursor:"pointer",fontSize:13,padding:"2px 4px"}}>✕</button>}
       </div>
       <div style={{display:"flex",padding:"8px 12px 10px",gap:6,flexWrap:"wrap"}}>
         {weights.map(w => (
           <div key={w.set} style={{
             display:"flex",flexDirection:"column",alignItems:"center",
-            background:"rgba(255,255,255,0.05)",borderRadius:10,
+            background:`rgba(${P.ink},0.05)`,borderRadius:14,
             padding:"8px 10px",minWidth:54,
           }}>
-            <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:9,color:"#555577",fontWeight:600,textTransform:"uppercase"}}>Set {w.set}</span>
-            <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:900,color:"#fff",lineHeight:1.1}}>{w.lbs}</span>
-            <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:9,color:"#555577"}}>lbs</span>
+            <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:9,color:`${P.muted}`,fontWeight:600,textTransform:"uppercase"}}>Set {w.set}</span>
+            <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:900,color:`${P.text}`,lineHeight:1.1}}>{w.lbs}</span>
+            <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:9,color:`${P.muted}`}}>lbs</span>
             <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:9,color:planColor,marginTop:3,textAlign:"center",lineHeight:1.3}}>{w.note}</span>
           </div>
         ))}
@@ -2125,36 +2870,36 @@ function DailyLog({ selectedDate, logs, setLogs, onCelebrate, profile, activeTim
   }, [weightInput, update, profile, logs, selectedDate]);
 
   const tabs = [
-    {id:"workout",    label:"Workout",    icon:"💪", count: plan.exercises.length > 0 ? `${exDoneCount}/${plan.exercises.length}` : "Rest"},
-    {id:"meals",      label:"Meals",      icon:"🍽️", count: `${MEALS.filter(m=>(log.meals||{})[m.id]).length}/${MEALS.length}`},
-    {id:"supps",      label:"Supps",      icon:"💊", count: `${SUPPLEMENTS.filter(s=>(log.supplements||{})[s.id]).length}/${SUPPLEMENTS.length}`},
-    {id:"weight",     label:"Weight",     icon:"⚖️", count: log.weight ? `${log.weight}` : "—"},
+    {id:"workout",    label:"Workout",    icon:"dumbbell", count: plan.exercises.length > 0 ? `${exDoneCount}/${plan.exercises.length}` : "Rest"},
+    {id:"meals",      label:"Meals",      icon:"meals", count: `${MEALS.filter(m=>(log.meals||{})[m.id]).length}/${MEALS.length}`},
+    {id:"supps",      label:"Supps",      icon:"pill", count: `${SUPPLEMENTS.filter(s=>(log.supplements||{})[s.id]).length}/${SUPPLEMENTS.length}`},
+    {id:"weight",     label:"Weight",     icon:"scale", count: log.weight ? `${log.weight}` : "—"},
   ];
 
   return (
     <div style={{display:"flex",flexDirection:"column",height:"100%", animation:MOTION?"none":"fadeUp 0.4s ease both"}}>
       {/* Date header */}
       <div style={{padding:"16px 16px 0"}}>
-        <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:"#888aaa"}}>{dateLabel}</div>
-        <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:900,color:"#fff",letterSpacing:0.5}}>
+        <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:`${P.sub}`}}>{dateLabel}</div>
+        <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:900,color:`${P.text}`,letterSpacing:0.5}}>
           <span style={{color:plan.color}}>{plan.emoji} {plan.name}</span>
         </div>
-        <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:"#555577",marginTop:2}}>{plan.sub}</div>
+        <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:`${P.muted}`,marginTop:2}}>{plan.sub}</div>
       </div>
 
       {/* Tab bar */}
       <div style={{display:"flex",padding:"12px 16px 0",gap:8,overflowX:"auto"}}>
         {tabs.map(t => (
           <button key={t.id} onClick={()=>setTab(t.id)} style={{
-            display:"flex",alignItems:"center",gap:6,padding:"8px 14px",borderRadius:12,border:"none",cursor:"pointer",
-            background: tab===t.id ? "#f0b429" : "#1a1a2e",
-            color: tab===t.id ? "#000" : "#888aaa",
+            display:"flex",alignItems:"center",gap:6,padding:"9px 15px",borderRadius:16,border:"none",cursor:"pointer",
+            background: tab===t.id ? `${P.acc}` : `${P.card}`,
+            color: tab===t.id ? `${P.onAcc}` : `${P.sub}`,
             fontFamily:"'DM Sans',sans-serif", fontWeight:600, fontSize:12, whiteSpace:"nowrap",
             transition:"all 0.2s",
           }}>
-            <span>{t.icon}</span>{t.label}
+            <Icon name={t.icon} size={16} sw={2}/>{t.label}
             <span style={{
-              background: tab===t.id ? "rgba(0,0,0,0.2)" : "rgba(255,255,255,0.08)",
+              background: tab===t.id ? "rgba(0,0,0,0.2)" : `rgba(${P.ink},0.08)`,
               borderRadius:6, padding:"1px 6px", fontSize:10, fontWeight:700
             }}>{t.count}</span>
           </button>
@@ -2168,16 +2913,16 @@ function DailyLog({ selectedDate, logs, setLogs, onCelebrate, profile, activeTim
           plan.type==="rest" ? (
             <div style={{textAlign:"center",padding:"40px 20px"}}>
               <div style={{fontSize:60,marginBottom:16}}>{plan.emoji}</div>
-              <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:800,color:"#fff"}}>{plan.name}</div>
-              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:14,color:"#888aaa",marginTop:8}}>{plan.sub}</div>
-              <div style={{marginTop:20,padding:"16px",background:"#111120",borderRadius:16,fontSize:14,color:"#555577",lineHeight:1.6,fontFamily:"'DM Sans',sans-serif"}}>
+              <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:800,color:`${P.text}`}}>{plan.name}</div>
+              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:14,color:`${P.sub}`,marginTop:8}}>{plan.sub}</div>
+              <div style={{marginTop:20,padding:"16px",background:`${P.card}`,borderRadius:24,fontSize:14,color:`${P.muted}`,lineHeight:1.6,fontFamily:"'DM Sans',sans-serif"}}>
                 Focus on nutrition, sleep 8–9 hrs, foam roll, and light walking. This is when muscles GROW.
               </div>
             </div>
           ) : (
             <>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"-4px 2px 10px"}}>
-                <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:"#555577"}}>Tap a card to open · ↻ flips to the plan</span>
+                <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:`${P.muted}`}}>Tap a card to open · ↻ flips to the plan</span>
                 <button onClick={() => setAllOpen(!allOpen)} style={{background:"none",border:"none",cursor:"pointer",color:plan.color,fontFamily:"'DM Sans',sans-serif",fontSize:11,fontWeight:600,padding:"4px 0"}}>
                   {allOpen ? "Collapse all" : "Expand all"}
                 </button>
@@ -2197,9 +2942,9 @@ function DailyLog({ selectedDate, logs, setLogs, onCelebrate, profile, activeTim
 
                   return (
                     <div key={ex.id} style={{
-                      background: allDone ? `${plan.color}18` : anyDone ? `${plan.color}09` : "#111120",
-                      borderRadius:18,
-                      border: isActive ? `2px solid ${plan.color}` : allDone ? `1px solid ${plan.color}44` : "1px solid #1a1a2e",
+                      background: allDone ? `${plan.color}18` : anyDone ? `${plan.color}09` : `${P.card}`,
+                      borderRadius:26,
+                      border: isActive ? `2px solid ${plan.color}` : allDone ? `1px solid ${plan.color}44` : `1px solid rgba(${P.ink},0.16)`,
                       overflow:"hidden", transition:"all 0.25s",
                       animation:`fadeUp 0.3s ${i*0.06}s both`,
                     }}>
@@ -2210,22 +2955,22 @@ function DailyLog({ selectedDate, logs, setLogs, onCelebrate, profile, activeTim
                         onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleOpen(ex); } }}
                         style={{display:"flex",alignItems:"center",gap:12,padding: open ? "12px 14px 8px" : "12px 14px",cursor:"pointer",transition:"padding 0.3s ease"}}>
                         <div style={{
-                          width:34,height:34,borderRadius:10,flexShrink:0,
-                          background: allDone ? plan.color : anyDone ? `${plan.color}33` : "rgba(255,255,255,0.06)",
+                          width:34,height:34,borderRadius:14,flexShrink:0,
+                          background: allDone ? plan.color : anyDone ? `${plan.color}33` : `rgba(${P.ink},0.06)`,
                           display:"flex",alignItems:"center",justifyContent:"center",
                           fontFamily:"'Barlow Condensed',sans-serif",fontSize:13,fontWeight:900,
-                          color: allDone ? "#000" : plan.color, transition:"all 0.25s",
+                          color: allDone ? `${P.onAcc}` : plan.color, transition:"all 0.25s",
                         }}>
                           {allDone ? "✓" : anyDone ? `${doneCount}/${total}` : ""}
                         </div>
                         <div style={{flex:1}}>
                           <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:14,fontWeight:600,
-                            color: allDone ? "rgba(255,255,255,0.4)":"#fff",
+                            color: allDone ? `rgba(${P.ink},0.4)`:`${P.text}`,
                             textDecoration: allDone?"line-through":"none",
                           }}>{ex.name}</div>
                           <div style={{display:"flex",gap:8,marginTop:2,flexWrap:"wrap"}}>
                             <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:12,color:plan.color,fontWeight:700}}>{ex.sets} sets · {ex.reps} reps</span>
-                            <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:12,color:"#444466"}}>↺ {ex.rest}</span>
+                            <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:12,color:`${P.faint}`}}>↺ {ex.rest}</span>
                           </div>
                         </div>
                         {isActive && <div style={{fontSize:15,animation:"streakBounce 0.8s ease-in-out infinite"}}>⏱️</div>}
@@ -2233,38 +2978,38 @@ function DailyLog({ selectedDate, logs, setLogs, onCelebrate, profile, activeTim
                         {/* collapsed: one dot per set, so progress reads at a glance */}
                         {!open && (
                           <div style={{display:"flex",gap:3}}>
-                            {setsData.map((s, si) => <div key={si} style={{width:6,height:6,borderRadius:"50%",background: s.done ? plan.color : "rgba(255,255,255,0.12)"}}/>)}
+                            {setsData.map((s, si) => <div key={si} style={{width:6,height:6,borderRadius:"50%",background: s.done ? plan.color : `rgba(${P.ink},0.12)`}}/>)}
                           </div>
                         )}
                         {open && (
                           <button aria-label={flipped ? "Show set log" : "Show plan and last session"}
                             onClick={e => { e.stopPropagation(); setFlippedEx(f => ({...f, [ex.id]: !flipped})); }}
                             style={{display:"flex",alignItems:"center",gap:4,padding:"5px 9px",borderRadius:9,cursor:"pointer",
-                              border:`1px solid ${plan.color}44`, background: flipped ? `${plan.color}22` : "rgba(255,255,255,0.04)",
+                              border:`1px solid ${plan.color}44`, background: flipped ? `${plan.color}22` : `rgba(${P.ink},0.04)`,
                               color: plan.color, fontFamily:"'Barlow Condensed',sans-serif", fontSize:12, fontWeight:800, letterSpacing:0.5}}>
                             <span style={{display:"inline-block",transition:"transform 0.6s ease",transform:`rotate(${flipped ? 180 : 0}deg)`}}>↻</span>
                             {flipped ? "LOG" : "PLAN"}
                           </button>
                         )}
-                        <div style={{color:"#555577",fontSize:12,transition:"transform 0.35s ease",transform:`rotate(${open ? 180 : 0}deg)`}}>▾</div>
+                        <div style={{color:`${P.muted}`,fontSize:12,transition:"transform 0.35s ease",transform:`rotate(${open ? 180 : 0}deg)`}}>▾</div>
                       </div>
 
                       <FlipPanel open={open} flipped={flipped}
                         back={
                           <div style={{paddingBottom:12}}>
                             <PyramidSuggestion exercise={ex} numSets={total} lastSessionSets={lastSess} planColor={plan.color} alwaysOpen/>
-                            <div style={{margin:"0 14px",padding:"8px 12px",background:"rgba(255,255,255,0.03)",borderRadius:10}}>
-                              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:9,fontWeight:600,color:"#444466",textTransform:"uppercase",letterSpacing:0.5,marginBottom:6}}>Last session</div>
+                            <div style={{margin:"0 14px",padding:"8px 12px",background:`rgba(${P.ink},0.03)`,borderRadius:14}}>
+                              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:9,fontWeight:600,color:`${P.faint}`,textTransform:"uppercase",letterSpacing:0.5,marginBottom:6}}>Last session</div>
                               {lastLogged.length ? (
                                 <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
                                   {lastSess.map((s, si) => (s.lbs || s.reps) ? (
-                                    <div key={si} style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:14,fontWeight:700,color:"#fff",background:"rgba(255,255,255,0.05)",borderRadius:8,padding:"4px 8px"}}>
-                                      <span style={{color:"#555577"}}>S{si+1} </span>{s.lbs || "BW"}{s.reps ? ` × ${s.reps}` : ""}
+                                    <div key={si} style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:14,fontWeight:700,color:`${P.text}`,background:`rgba(${P.ink},0.05)`,borderRadius:8,padding:"4px 8px"}}>
+                                      <span style={{color:`${P.muted}`}}>S{si+1} </span>{s.lbs || "BW"}{s.reps ? ` × ${s.reps}` : ""}
                                     </div>
                                   ) : null)}
                                 </div>
                               ) : (
-                                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:"#444466"}}>Nothing logged yet for this exercise</div>
+                                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:`${P.faint}`}}>Nothing logged yet for this exercise</div>
                               )}
                               <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:12,color:plan.color,fontWeight:700,marginTop:8}}>
                                 Target: {ex.sets} sets · {ex.reps} reps · rest {ex.rest}
@@ -2277,7 +3022,7 @@ function DailyLog({ selectedDate, logs, setLogs, onCelebrate, profile, activeTim
                       {/* Column headers */}
                       <div style={{display:"grid",gridTemplateColumns:"32px 1fr 1fr 40px",gap:6,padding:"0 14px 6px",alignItems:"center"}}>
                         {["SET","WEIGHT (lbs)","REPS DONE",""].map((h,hi)=>(
-                          <div key={hi} style={{fontFamily:"'DM Sans',sans-serif",fontSize:9,fontWeight:600,color:"#444466",textTransform:"uppercase",letterSpacing:0.5,textAlign: hi===3?"center":"left"}}>{h}</div>
+                          <div key={hi} style={{fontFamily:"'DM Sans',sans-serif",fontSize:9,fontWeight:600,color:`${P.faint}`,textTransform:"uppercase",letterSpacing:0.5,textAlign: hi===3?"center":"left"}}>{h}</div>
                         ))}
                       </div>
 
@@ -2288,15 +3033,15 @@ function DailyLog({ selectedDate, logs, setLogs, onCelebrate, profile, activeTim
                           return (
                             <div key={si} style={{
                               display:"grid", gridTemplateColumns:"32px 1fr 1fr 40px", gap:6, alignItems:"center",
-                              padding:"6px 8px", borderRadius:10,
-                              background: isTiming ? `${plan.color}22` : s.done ? `${plan.color}14` : "rgba(255,255,255,0.03)",
+                              padding:"6px 8px", borderRadius:14,
+                              background: isTiming ? `${plan.color}22` : s.done ? `${plan.color}14` : `rgba(${P.ink},0.03)`,
                               border: isTiming ? `1px solid ${plan.color}66` : s.done ? `1px solid ${plan.color}22` : "1px solid transparent",
                               transition:"all 0.2s",
                             }}>
                               {/* Set badge */}
                               <div style={{
                                 fontFamily:"'Barlow Condensed',sans-serif",fontSize:13,fontWeight:900,
-                                color: s.done ? plan.color : "#555577", textAlign:"center",
+                                color: s.done ? plan.color : `${P.muted}`, textAlign:"center",
                               }}>S{si+1}</div>
 
                               {/* Weight input */}
@@ -2307,9 +3052,9 @@ function DailyLog({ selectedDate, logs, setLogs, onCelebrate, profile, activeTim
                                 onChange={e => updateSet(ex, si, "lbs", e.target.value)}
                                 style={{
                                   padding:"5px 8px", borderRadius:8,
-                                  background: s.done ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.07)",
-                                  border:`1px solid ${s.lbs ? plan.color+"55" : "rgba(255,255,255,0.08)"}`,
-                                  color: s.lbs ? "#fff" : "#444466",
+                                  background: s.done ? `rgba(${P.ink},0.04)` : `rgba(${P.ink},0.07)`,
+                                  border:`1px solid ${s.lbs ? plan.color+"55" : `rgba(${P.ink},0.08)`}`,
+                                  color: s.lbs ? `${P.text}` : `${P.faint}`,
                                   fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:700,
                                   width:"100%", outline:"none", textAlign:"center",
                                 }}
@@ -2323,9 +3068,9 @@ function DailyLog({ selectedDate, logs, setLogs, onCelebrate, profile, activeTim
                                 onChange={e => updateSet(ex, si, "reps", e.target.value)}
                                 style={{
                                   padding:"5px 8px", borderRadius:8,
-                                  background: s.done ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.07)",
-                                  border:`1px solid ${s.reps ? "#39d98a55" : "rgba(255,255,255,0.08)"}`,
-                                  color: s.reps ? "#fff" : "#444466",
+                                  background: s.done ? `rgba(${P.ink},0.04)` : `rgba(${P.ink},0.07)`,
+                                  border:`1px solid ${s.reps ? `${P.good}55` : `rgba(${P.ink},0.08)`}`,
+                                  color: s.reps ? `${P.text}` : `${P.faint}`,
                                   fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:700,
                                   width:"100%", outline:"none", textAlign:"center",
                                 }}
@@ -2336,8 +3081,8 @@ function DailyLog({ selectedDate, logs, setLogs, onCelebrate, profile, activeTim
                                 onClick={() => updateSet(ex, si, "done", !s.done)}
                                 style={{
                                   width:34, height:34, borderRadius:9, border:"none", cursor:"pointer",
-                                  background: isTiming ? `${plan.color}44` : s.done ? plan.color : "rgba(255,255,255,0.07)",
-                                  color: s.done ? "#000" : isTiming ? plan.color : "#333355",
+                                  background: isTiming ? `${plan.color}44` : s.done ? plan.color : `rgba(${P.ink},0.07)`,
+                                  color: s.done ? `${P.onAcc}` : isTiming ? plan.color : `rgba(${P.ink},0.3)`,
                                   fontSize: isTiming ? 14 : 13,
                                   transition:"all 0.2s",
                                   transform: isTiming ? "scale(1.1)" : "scale(1)",
@@ -2353,7 +3098,7 @@ function DailyLog({ selectedDate, logs, setLogs, onCelebrate, profile, activeTim
                       </>}/>
 
                       {/* Progress bar */}
-                      <div style={{height:2,background:"rgba(255,255,255,0.04)"}}>
+                      <div style={{height:2,background:`rgba(${P.ink},0.04)`}}>
                         <div style={{height:"100%",width:`${(doneCount/total)*100}%`,background:`linear-gradient(90deg,${plan.color}66,${plan.color})`,transition:"width 0.4s ease"}}/>
                       </div>
                     </div>
@@ -2373,35 +3118,35 @@ function DailyLog({ selectedDate, logs, setLogs, onCelebrate, profile, activeTim
                 <div key={meal.id} onClick={() => update(["meals",meal.id], !done)}
                   style={{
                     display:"flex",alignItems:"flex-start",gap:14,padding:"14px 16px",
-                    background: done ? "#39d98a18" : "#111120",
-                    borderRadius:14, cursor:"pointer",
-                    border: done ? "1px solid #39d98a44" : "1px solid #1a1a2e",
+                    background: done ? `${P.good}18` : `${P.card}`,
+                    borderRadius:20, cursor:"pointer",
+                    border: done ? `1px solid ${P.good}44` : `1px solid rgba(${P.ink},0.16)`,
                     transition:"all 0.25s", animation:`fadeUp 0.3s ${i*0.05}s both`,
                   }}>
                   <div style={{
-                    width:42,height:42,borderRadius:12,flexShrink:0,
-                    background: done ? "#39d98a" : "rgba(255,255,255,0.06)",
+                    width:42,height:42,borderRadius:16,flexShrink:0,
+                    background: done ? `${P.good}` : `rgba(${P.ink},0.06)`,
                     display:"flex",alignItems:"center",justifyContent:"center",
                     fontSize:22, transition:"all 0.2s",
                   }}>{done?"✓":meal.emoji}</div>
                   <div style={{flex:1}}>
                     <div style={{display:"flex",justifyContent:"space-between"}}>
-                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:14,fontWeight:600,color:done?"rgba(255,255,255,0.5)":"#fff",textDecoration:done?"line-through":"none"}}>{meal.name}</div>
-                      <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:13,color:"#888aaa"}}>{meal.time}</div>
+                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:14,fontWeight:600,color:done?`rgba(${P.ink},0.5)`:`${P.text}`,textDecoration:done?"line-through":"none"}}>{meal.name}</div>
+                      <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:13,color:`${P.sub}`}}>{meal.time}</div>
                     </div>
-                    <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:"#888aaa",marginTop:3,lineHeight:1.4}}>{meal.foods}</div>
-                    <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:12,color:"#39d98a",marginTop:4,fontWeight:700}}>{meal.macros}</div>
+                    <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:`${P.sub}`,marginTop:3,lineHeight:1.4}}>{meal.foods}</div>
+                    <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:12,color:`${P.good}`,marginTop:4,fontWeight:700}}>{meal.macros}</div>
                   </div>
                 </div>
               );
             })}
-            <div style={{background:"#111120",borderRadius:14,padding:"12px 16px",border:"1px solid #1a1a2e"}}>
-              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:"#888aaa",marginBottom:6}}>Daily target</div>
+            <div style={{background:`${P.card}`,borderRadius:20,padding:"12px 16px",border:`1px solid rgba(${P.ink},0.16)`}}>
+              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:`${P.sub}`,marginBottom:6}}>Daily target</div>
               <div style={{display:"flex",gap:16}}>
-                {[["Protein","190g","#ff6b6b"],["Carbs","375g","#f0b429"],["Fats","100g","#4fc3f7"],["Kcal","3,160","#39d98a"]].map(([l,v,c])=>(
+                {[["Protein","190g",`${P.bad}`],["Carbs","375g",`${P.acc}`],["Fats","100g",`${P.info}`],["Kcal","3,160",`${P.good}`]].map(([l,v,c])=>(
                   <div key={l} style={{textAlign:"center"}}>
                     <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:18,fontWeight:800,color:c}}>{v}</div>
-                    <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:"#555577"}}>{l}</div>
+                    <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:`${P.muted}`}}>{l}</div>
                   </div>
                 ))}
               </div>
@@ -2418,31 +3163,31 @@ function DailyLog({ selectedDate, logs, setLogs, onCelebrate, profile, activeTim
                 <div key={supp.id} onClick={() => update(["supplements",supp.id], !done)}
                   style={{
                     display:"flex",alignItems:"center",gap:14,padding:"14px 16px",
-                    background: done ? `${supp.color}14` : "#111120",
-                    borderRadius:14, cursor:"pointer",
-                    border: done ? `1px solid ${supp.color}44` : "1px solid #1a1a2e",
+                    background: done ? `${supp.color}14` : `${P.card}`,
+                    borderRadius:20, cursor:"pointer",
+                    border: done ? `1px solid ${supp.color}44` : `1px solid rgba(${P.ink},0.16)`,
                     transition:"all 0.25s", animation:`fadeUp 0.3s ${i*0.05}s both`,
                   }}>
                   <div style={{
-                    width:44,height:44,borderRadius:12,flexShrink:0,
-                    background: done ? supp.color : "rgba(255,255,255,0.06)",
+                    width:44,height:44,borderRadius:16,flexShrink:0,
+                    background: done ? supp.color : `rgba(${P.ink},0.06)`,
                     display:"flex",alignItems:"center",justifyContent:"center",
                     fontSize:22, transition:"all 0.2s",
                   }}>{done?"✓":supp.emoji}</div>
                   <div style={{flex:1}}>
-                    <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:14,fontWeight:600,color:done?"rgba(255,255,255,0.5)":"#fff",textDecoration:done?"line-through":"none"}}>{supp.name}</div>
+                    <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:14,fontWeight:600,color:done?`rgba(${P.ink},0.5)`:`${P.text}`,textDecoration:done?"line-through":"none"}}>{supp.name}</div>
                     <div style={{display:"flex",gap:10,marginTop:3}}>
                       <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:13,color:supp.color,fontWeight:700}}>{supp.dose}</span>
-                      <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:13,color:"#555577"}}>{supp.timing}</span>
+                      <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:13,color:`${P.muted}`}}>{supp.timing}</span>
                     </div>
                   </div>
                   {done && <div style={{fontSize:18,animation:"pop 0.3s ease"}}>✅</div>}
                 </div>
               );
             })}
-            <div style={{background:"#1a0a00",borderRadius:14,padding:"12px 16px",border:"1px solid #f0b42922"}}>
-              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:"#f0b429",fontWeight:600}}>⭐ AA Priority · 🌿 Dairy-Free</div>
-              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:"#888aaa",marginTop:4}}>Pea + Rice protein = complete amino profile, gut-friendly. Vit D3 4,000–6,000 IU · Omega-3 3–4g EPA/DHA · Magnesium 400mg — critical for Black men. Get bloodwork to confirm dosing.</div>
+            <div style={{background:"#1a0a00",borderRadius:20,padding:"12px 16px",border:`1px solid ${P.acc}22`}}>
+              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:`${P.acc}`,fontWeight:600}}>⭐ AA Priority · 🌿 Dairy-Free</div>
+              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:`${P.sub}`,marginTop:4}}>Pea + Rice protein = complete amino profile, gut-friendly. Vit D3 4,000–6,000 IU · Omega-3 3–4g EPA/DHA · Magnesium 400mg — critical for Black men. Get bloodwork to confirm dosing.</div>
             </div>
           </div>
         )}
@@ -2450,8 +3195,8 @@ function DailyLog({ selectedDate, logs, setLogs, onCelebrate, profile, activeTim
         {/* WEIGHT TAB */}
         {tab==="weight" && (
           <div style={{display:"flex",flexDirection:"column",gap:16}}>
-            <div style={{background:"#111120",borderRadius:16,padding:20,border:"1px solid #1a1a2e"}}>
-              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:13,color:"#888aaa",marginBottom:12}}>Log today's weight</div>
+            <div style={{background:`${P.card}`,borderRadius:24,padding:20,border:`1px solid rgba(${P.ink},0.16)`}}>
+              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:13,color:`${P.sub}`,marginBottom:12}}>Log today's weight</div>
               <div style={{display:"flex",gap:10,alignItems:"center"}}>
                 <input
                   type="number" step="0.1" value={weightInput}
@@ -2459,26 +3204,26 @@ function DailyLog({ selectedDate, logs, setLogs, onCelebrate, profile, activeTim
                   placeholder="e.g. 177.5"
                   style={{
                     flex:1, padding:"14px 16px",
-                    background:"#0e0e1c", border:"1px solid #2a2a3e", borderRadius:12,
-                    fontFamily:"'Barlow Condensed',sans-serif", fontSize:24, fontWeight:700, color:"#fff",
+                    background:`${P.inset}`, border:`1px solid rgba(${P.ink},0.22)`, borderRadius:16,
+                    fontFamily:"'Barlow Condensed',sans-serif", fontSize:24, fontWeight:700, color:`${P.text}`,
                     outline:"none", textAlign:"center",
                   }}
                 />
-                <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,color:"#888aaa",fontWeight:600}}>lbs</span>
+                <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,color:`${P.sub}`,fontWeight:600}}>lbs</span>
               </div>
               <button onClick={saveWeight} style={{
                 width:"100%", marginTop:12, padding:"14px",
-                background:"linear-gradient(135deg,#f0b429,#ff8f00)",
-                border:"none", borderRadius:12, cursor:"pointer",
-                fontFamily:"'Barlow Condensed',sans-serif", fontSize:18, fontWeight:800, color:"#000", letterSpacing:1,
+                background:`linear-gradient(135deg,${P.acc},${P.acc2})`,
+                border:"none", borderRadius:16, cursor:"pointer",
+                fontFamily:"'Barlow Condensed',sans-serif", fontSize:18, fontWeight:800, color:`${P.onAcc}`, letterSpacing:1,
               }}>SAVE WEIGHT</button>
             </div>
             {log.weight && (
-              <div style={{background:"#111120",borderRadius:16,padding:20,border:"1px solid #39d98a44",textAlign:"center"}}>
-                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:13,color:"#888aaa"}}>Today's logged weight</div>
-                <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:48,fontWeight:900,color:"#f0b429",lineHeight:1}}>{log.weight} <span style={{fontSize:24}}>lbs</span></div>
+              <div style={{background:`${P.card}`,borderRadius:24,padding:20,border:`1px solid ${P.good}44`,textAlign:"center"}}>
+                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:13,color:`${P.sub}`}}>Today's logged weight</div>
+                <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:48,fontWeight:900,color:`${P.acc}`,lineHeight:1}}>{log.weight} <span style={{fontSize:24}}>lbs</span></div>
                 {log.weight > 175 && (
-                  <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:14,color:"#39d98a",marginTop:8}}>
+                  <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:14,color:`${P.good}`,marginTop:8}}>
                     +{(log.weight-175).toFixed(1)} lbs gained 💪
                   </div>
                 )}
@@ -2522,18 +3267,18 @@ function Calendar({ logs, selectedDate, setSelectedDate, setView }) {
     <div style={{padding:"16px", animation:MOTION?"none":"fadeUp 0.4s ease both"}}>
       {/* Month nav */}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
-        <button onClick={()=>setViewDate(new Date(year,month-1,1))} style={{background:"#1a1a2e",border:"none",color:"#fff",padding:"8px 14px",borderRadius:10,cursor:"pointer",fontSize:18}}>‹</button>
+        <button onClick={()=>setViewDate(new Date(year,month-1,1))} style={{background:`rgba(${P.ink},0.13)`,border:"none",color:`${P.text}`,padding:"8px 14px",borderRadius:14,cursor:"pointer",fontSize:18}}>‹</button>
         <div style={{textAlign:"center"}}>
-          <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:30,fontWeight:900,color:"#fff",letterSpacing:1}}>{["JANUARY","FEBRUARY","MARCH","APRIL","MAY","JUNE","JULY","AUGUST","SEPTEMBER","OCTOBER","NOVEMBER","DECEMBER"][month]}</div>
-          <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:13,color:"#888aaa"}}>{year}</div>
+          <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:30,fontWeight:900,color:`${P.text}`,letterSpacing:1}}>{["JANUARY","FEBRUARY","MARCH","APRIL","MAY","JUNE","JULY","AUGUST","SEPTEMBER","OCTOBER","NOVEMBER","DECEMBER"][month]}</div>
+          <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:13,color:`${P.sub}`}}>{year}</div>
         </div>
-        <button onClick={()=>setViewDate(new Date(year,month+1,1))} style={{background:"#1a1a2e",border:"none",color:"#fff",padding:"8px 14px",borderRadius:10,cursor:"pointer",fontSize:18}}>›</button>
+        <button onClick={()=>setViewDate(new Date(year,month+1,1))} style={{background:`rgba(${P.ink},0.13)`,border:"none",color:`${P.text}`,padding:"8px 14px",borderRadius:14,cursor:"pointer",fontSize:18}}>›</button>
       </div>
 
       {/* Day headers */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4,marginBottom:6}}>
         {["S","M","T","W","T","F","S"].map((d,i)=>(
-          <div key={i} style={{textAlign:"center",fontFamily:"'DM Sans',sans-serif",fontSize:11,fontWeight:600,color:"#555577",padding:"4px 0"}}>{d}</div>
+          <div key={i} style={{textAlign:"center",fontFamily:"'DM Sans',sans-serif",fontSize:11,fontWeight:600,color:`${P.muted}`,padding:"4px 0"}}>{d}</div>
         ))}
       </div>
 
@@ -2546,23 +3291,23 @@ function Calendar({ logs, selectedDate, setSelectedDate, setView }) {
           const isToday = key===today;
           const isSel = key===selectedDate;
           const future = key > today;
-          let bg = "#111120", border="1px solid #1a1a2e", dotColor=null;
+          let bg = `${P.card}`, border=`1px solid rgba(${P.ink},0.16)`, dotColor=null;
           if(comp!==null && !future) {
-            if(comp>=0.9) { bg="#39d98a22"; border="1px solid #39d98a55"; dotColor="#39d98a"; }
-            else if(comp>=0.5) { bg="#f0b42922"; border="1px solid #f0b42955"; dotColor="#f0b429"; }
-            else if(comp>0) { bg="#ff6b6b18"; border="1px solid #ff6b6b33"; dotColor="#ff6b6b"; }
+            if(comp>=0.9) { bg=`${P.good}22`; border=`1px solid ${P.good}55`; dotColor=`${P.good}`; }
+            else if(comp>=0.5) { bg=`${P.acc}22`; border=`1px solid ${P.acc}55`; dotColor=`${P.acc}`; }
+            else if(comp>0) { bg=`${P.bad}18`; border=`1px solid ${P.bad}33`; dotColor=`${P.bad}`; }
           }
-          if(isSel) { bg="#f0b42933"; border="2px solid #f0b429"; }
-          if(isToday && !isSel) { border="2px solid #4fc3f7"; }
+          if(isSel) { bg=`${P.acc}33`; border=`2px solid ${P.acc}`; }
+          if(isToday && !isSel) { border=`2px solid ${P.info}`; }
           return (
             <div key={key} onClick={()=>{ setSelectedDate(key); setView("log"); }}
               style={{
-                aspectRatio:"1",background:bg,border,borderRadius:12,
+                aspectRatio:"1",background:bg,border,borderRadius:16,
                 display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
                 cursor:future?"default":"pointer",position:"relative",
                 opacity:future?0.3:1,transition:"all 0.15s",
               }}>
-              <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:isSel||isToday?800:600,color:isSel?"#f0b429":isToday?"#4fc3f7":"#fff"}}>{day}</div>
+              <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:isSel||isToday?800:600,color:isSel?`${P.acc}`:isToday?`${P.info}`:`${P.text}`}}>{day}</div>
               {dotColor && <div style={{width:5,height:5,borderRadius:"50%",background:dotColor,marginTop:2}}/>}
             </div>
           );
@@ -2571,26 +3316,26 @@ function Calendar({ logs, selectedDate, setSelectedDate, setView }) {
 
       {/* Legend */}
       <div style={{display:"flex",gap:20,justifyContent:"center",marginTop:20,flexWrap:"wrap"}}>
-        {[["#39d98a","90%+ Complete"],["#f0b429","50–89%"],["#ff6b6b","< 50%"],["#4fc3f7","Today"]].map(([c,l])=>(
+        {[[`${P.good}`,"90%+ Complete"],[`${P.acc}`,"50–89%"],[`${P.bad}`,"< 50%"],[`${P.info}`,"Today"]].map(([c,l])=>(
           <div key={l} style={{display:"flex",alignItems:"center",gap:6}}>
             <div style={{width:10,height:10,borderRadius:"50%",background:c}}/>
-            <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:"#888aaa"}}>{l}</span>
+            <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:`${P.sub}`}}>{l}</span>
           </div>
         ))}
       </div>
 
       {/* Week summary */}
-      <div style={{marginTop:20,background:"#111120",borderRadius:16,padding:16,border:"1px solid #1a1a2e"}}>
-        <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:18,fontWeight:800,color:"#fff",marginBottom:12}}>WEEKLY SCHEDULE</div>
+      <div style={{marginTop:20,background:`${P.card}`,borderRadius:24,padding:16,border:`1px solid rgba(${P.ink},0.16)`}}>
+        <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:18,fontWeight:800,color:`${P.text}`,marginBottom:12}}>WEEKLY SCHEDULE</div>
         <div style={{display:"flex",flexDirection:"column",gap:8}}>
           {[1,2,3,4,5,6,0].map(dow=>{
             const p = WEEKLY_PLAN[dow];
             return (
-              <div key={dow} style={{display:"flex",alignItems:"center",gap:12,padding:"8px 12px",background:"#0e0e1c",borderRadius:10}}>
+              <div key={dow} style={{display:"flex",alignItems:"center",gap:12,padding:"8px 12px",background:`${P.inset}`,borderRadius:14}}>
                 <div style={{width:8,height:8,borderRadius:"50%",background:p.color,flexShrink:0}}/>
-                <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:700,color:"#fff",width:32,flexShrink:0}}>{["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][dow]}</div>
-                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:"#888aaa",flex:1}}>{p.name}</div>
-                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:"#555577"}}>{p.exercises.length>0?`${p.exercises.length} exercises`:"Rest"}</div>
+                <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:700,color:`${P.text}`,width:32,flexShrink:0}}>{["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][dow]}</div>
+                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:`${P.sub}`,flex:1}}>{p.name}</div>
+                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:`${P.muted}`}}>{p.exercises.length>0?`${p.exercises.length} exercises`:"Rest"}</div>
               </div>
             );
           })}
@@ -2745,9 +3490,9 @@ function Progress({ logs, setLogs, profile, setProfile, onCelebrate }) {
   ];
 
   const S = {
-    label: {fontFamily:"'DM Sans',sans-serif",fontSize:10,color:"#555577",fontWeight:600,textTransform:"uppercase",letterSpacing:0.5},
+    label: {fontFamily:"'DM Sans',sans-serif",fontSize:10,color:`${P.muted}`,fontWeight:600,textTransform:"uppercase",letterSpacing:0.5},
     val:   {fontFamily:"'Barlow Condensed',sans-serif",fontWeight:900},
-    card:  {background:"#111120",borderRadius:16,border:"1px solid #1a1a2e"},
+    card:  {background:`${P.card}`,borderRadius:24,border:`1px solid rgba(${P.ink},0.16)`},
   };
 
   return (
@@ -2756,83 +3501,83 @@ function Progress({ logs, setLogs, profile, setProfile, onCelebrate }) {
       {/* ── HEADER ── */}
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end"}}>
         <div>
-          <div style={{...S.val,fontSize:34,color:"#fff",letterSpacing:1}}>
-            WEIGHT <span style={{color:"#f0b429"}}>LOG</span>
+          <div style={{...S.val,fontSize:34,color:`${P.text}`,letterSpacing:1}}>
+            WEIGHT <span style={{color:`${P.acc}`}}>LOG</span>
           </div>
-          <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:"#555577",marginTop:2}}>{allWeightData.length} entries recorded</div>
+          <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:`${P.muted}`,marginTop:2}}>{allWeightData.length} entries recorded</div>
         </div>
         <button onClick={()=>setShowAddForm(!showAddForm)} style={{
-          background:showAddForm?"#1a1a2e":"linear-gradient(135deg,#f0b429,#ff8f00)",
-          border:"none",borderRadius:12,padding:"8px 16px",cursor:"pointer",
+          background:showAddForm?`rgba(${P.ink},0.13)`:`linear-gradient(135deg,${P.acc},${P.acc2})`,
+          border:"none",borderRadius:16,padding:"8px 16px",cursor:"pointer",
           fontFamily:"'Barlow Condensed',sans-serif",fontSize:15,fontWeight:800,
-          color:showAddForm?"#888aaa":"#000",letterSpacing:0.5,
+          color:showAddForm?`${P.sub}`:`${P.onAcc}`,letterSpacing:0.5,
         }}>{showAddForm ? "✕ Cancel" : "+ ADD ENTRY"}</button>
       </div>
 
       {/* ── ADD ENTRY FORM ── */}
       {showAddForm && (
-        <div style={{...S.card,padding:16,border:"1px solid #f0b42933",animation:"fadeUp 0.3s ease"}}>
-          <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:800,color:"#f0b429",marginBottom:12}}>ADD / UPDATE WEIGHT ENTRY</div>
+        <div style={{...S.card,padding:16,border:`1px solid ${P.acc}33`,animation:"fadeUp 0.3s ease"}}>
+          <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:800,color:`${P.acc}`,marginBottom:12}}>ADD / UPDATE WEIGHT ENTRY</div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
             <div>
               <div style={{...S.label,marginBottom:5}}>Date</div>
               <input type="date" value={addDate} onChange={e=>setAddDate(e.target.value)} max={today}
-                style={{width:"100%",padding:"10px 12px",background:"#0e0e1c",border:"1px solid #2a2a3e",borderRadius:10,color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:13,outline:"none"}}/>
+                style={{width:"100%",padding:"10px 12px",background:`${P.inset}`,border:`1px solid rgba(${P.ink},0.22)`,borderRadius:14,color:`${P.text}`,fontFamily:"'DM Sans',sans-serif",fontSize:13,outline:"none"}}/>
             </div>
             <div>
               <div style={{...S.label,marginBottom:5}}>Weight (lbs)</div>
               <input type="number" step="0.1" value={addVal} onChange={e=>setAddVal(e.target.value)} placeholder="175.0"
-                style={{width:"100%",padding:"10px 12px",background:"#0e0e1c",border:"1px solid #2a2a3e",borderRadius:10,color:"#fff",fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,outline:"none",textAlign:"center"}}/>
+                style={{width:"100%",padding:"10px 12px",background:`${P.inset}`,border:`1px solid rgba(${P.ink},0.22)`,borderRadius:14,color:`${P.text}`,fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,outline:"none",textAlign:"center"}}/>
             </div>
           </div>
           <button onClick={saveAddEntry} style={{
             width:"100%",marginTop:12,padding:"12px",
-            background:"linear-gradient(135deg,#f0b429,#ff8f00)",border:"none",borderRadius:10,cursor:"pointer",
-            fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:800,color:"#000",letterSpacing:1,
+            background:`linear-gradient(135deg,${P.acc},${P.acc2})`,border:"none",borderRadius:14,cursor:"pointer",
+            fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:800,color:`${P.onAcc}`,letterSpacing:1,
           }}>SAVE ENTRY</button>
         </div>
       )}
 
       {/* ── HERO STAT ── */}
-      <div style={{...S.card,padding:20,background:"linear-gradient(135deg,#1a0f00,#111120)",border:"1px solid #f0b42933",position:"relative",overflow:"hidden"}}>
+      <div style={{...S.card,padding:20,background:`linear-gradient(135deg,rgba(${P.accRgb},0.10),${P.card})`,border:`1px solid ${P.acc}33`,position:"relative",overflow:"hidden"}}>
         <div style={{position:"absolute",right:16,top:10,fontSize:56,opacity:0.06}}>⚖️</div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:16,marginBottom:16}}>
           <div>
             <div style={{...S.label}}>Start</div>
-            <div style={{...S.val,fontSize:26,color:"#fff"}}>{profile.startWeight}<span style={{fontSize:14,color:"#555577"}}> lbs</span></div>
+            <div style={{...S.val,fontSize:26,color:`${P.text}`}}>{profile.startWeight}<span style={{fontSize:14,color:`${P.muted}`}}> lbs</span></div>
           </div>
           <div style={{textAlign:"center"}}>
             <div style={{...S.label}}>Current</div>
-            <div style={{...S.val,fontSize:26,color:"#4fc3f7"}}>{currentWeight}<span style={{fontSize:14,color:"#555577"}}> lbs</span></div>
+            <div style={{...S.val,fontSize:26,color:`${P.info}`}}>{currentWeight}<span style={{fontSize:14,color:`${P.muted}`}}> lbs</span></div>
           </div>
           <div style={{textAlign:"right"}}>
             <div style={{...S.label}}>Goal</div>
-            <div style={{...S.val,fontSize:26,color:"#39d98a"}}>{profile.startWeight+20}<span style={{fontSize:14,color:"#555577"}}> lbs</span></div>
+            <div style={{...S.val,fontSize:26,color:`${P.good}`}}>{profile.startWeight+20}<span style={{fontSize:14,color:`${P.muted}`}}> lbs</span></div>
           </div>
         </div>
         <div style={{textAlign:"center",marginBottom:14}}>
-          <div style={{...S.val,fontSize:52,color:gained>=0?"#f0b429":"#ff6b6b",lineHeight:1}}>
-            {gained>=0?"+":""}{gained.toFixed(1)} <span style={{fontSize:24,color:"rgba(255,255,255,0.4)"}}>lbs gained</span>
+          <div style={{...S.val,fontSize:52,color:gained>=0?`${P.acc}`:`${P.bad}`,lineHeight:1}}>
+            {gained>=0?"+":""}{gained.toFixed(1)} <span style={{fontSize:24,color:`rgba(${P.ink},0.4)`}}>lbs gained</span>
           </div>
         </div>
-        <div style={{height:10,background:"rgba(255,255,255,0.06)",borderRadius:5,overflow:"hidden"}}>
-          <div style={{height:"100%",width:`${gainPct}%`,background:"linear-gradient(90deg,#f0b429,#ff6b6b)",borderRadius:5,transition:"width 1s ease",position:"relative"}}>
-            {gainPct>8&&<div style={{position:"absolute",right:6,top:0,height:"100%",display:"flex",alignItems:"center",fontFamily:"'Barlow Condensed',sans-serif",fontSize:9,fontWeight:800,color:"#000"}}>{gainPct.toFixed(0)}%</div>}
+        <div style={{height:10,background:`rgba(${P.ink},0.06)`,borderRadius:5,overflow:"hidden"}}>
+          <div style={{height:"100%",width:`${gainPct}%`,background:`linear-gradient(90deg,${P.acc},${P.bad})`,borderRadius:5,transition:"width 1s ease",position:"relative"}}>
+            {gainPct>8&&<div style={{position:"absolute",right:6,top:0,height:"100%",display:"flex",alignItems:"center",fontFamily:"'Barlow Condensed',sans-serif",fontSize:9,fontWeight:800,color:`${P.onAcc}`}}>{gainPct.toFixed(0)}%</div>}
           </div>
         </div>
         <div style={{display:"flex",justifyContent:"space-between",marginTop:5}}>
-          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:"#555577"}}>{profile.startWeight} lbs</span>
-          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:"#555577"}}>Goal: {profile.startWeight+20} lbs</span>
+          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:`${P.muted}`}}>{profile.startWeight} lbs</span>
+          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:`${P.muted}`}}>Goal: {profile.startWeight+20} lbs</span>
         </div>
       </div>
 
       {/* ── STAT PILLS ── */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8}}>
         {[
-          {label:"7-day avg", val: avgLast7 ? avgLast7.toFixed(1) : "—", color:"#4fc3f7", icon:"📊"},
-          {label:"Week trend", val: weekTrend!=null ? `${weekTrend>=0?"+":""}${weekTrend.toFixed(1)}` : "—", color: weekTrend!=null&&weekTrend>=0?"#39d98a":"#ff6b6b", icon: weekTrend!=null&&weekTrend>=0?"📈":"📉"},
-          {label:"Heaviest",  val: heaviest ? heaviest.toFixed(1) : "—", color:"#ff6b6b", icon:"🔺"},
-          {label:"Lightest",  val: lightest ? lightest.toFixed(1) : "—", color:"#39d98a", icon:"🔻"},
+          {label:"7-day avg", val: avgLast7 ? avgLast7.toFixed(1) : "—", color:`${P.info}`, icon:"📊"},
+          {label:"Week trend", val: weekTrend!=null ? `${weekTrend>=0?"+":""}${weekTrend.toFixed(1)}` : "—", color: weekTrend!=null&&weekTrend>=0?`${P.good}`:`${P.bad}`, icon: weekTrend!=null&&weekTrend>=0?"📈":"📉"},
+          {label:"Heaviest",  val: heaviest ? heaviest.toFixed(1) : "—", color:`${P.bad}`, icon:"🔺"},
+          {label:"Lightest",  val: lightest ? lightest.toFixed(1) : "—", color:`${P.good}`, icon:"🔻"},
         ].map(s=>(
           <div key={s.label} style={{...S.card,padding:"12px 8px",textAlign:"center"}}>
             <div style={{fontSize:16}}>{s.icon}</div>
@@ -2845,13 +3590,13 @@ function Progress({ logs, setLogs, profile, setProfile, onCelebrate }) {
       {/* ── CHART ── */}
       <div style={{...S.card,padding:18}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
-          <div style={{...S.val,fontSize:18,color:"#fff"}}>WEIGHT CHART</div>
+          <div style={{...S.val,fontSize:18,color:`${P.text}`}}>WEIGHT CHART</div>
           <div style={{display:"flex",gap:4}}>
             {[["7","7D"],["30","30D"],["all","All"]].map(([v,l])=>(
               <button key={v} onClick={()=>setChartRange(v)} style={{
                 padding:"4px 10px",borderRadius:8,border:"none",cursor:"pointer",
-                background: chartRange===v ? "#f0b429" : "#1a1a2e",
-                color: chartRange===v ? "#000" : "#888aaa",
+                background: chartRange===v ? `${P.acc}` : `rgba(${P.ink},0.13)`,
+                color: chartRange===v ? `${P.onAcc}` : `${P.sub}`,
                 fontFamily:"'Barlow Condensed',sans-serif",fontSize:13,fontWeight:700,
               }}>{l}</button>
             ))}
@@ -2859,7 +3604,7 @@ function Progress({ logs, setLogs, profile, setProfile, onCelebrate }) {
         </div>
 
         {filtered.length < 2 ? (
-          <div style={{textAlign:"center",padding:"30px 0",color:"#333344",fontFamily:"'DM Sans',sans-serif",fontSize:13}}>
+          <div style={{textAlign:"center",padding:"30px 0",color:`rgba(${P.ink},0.2)`,fontFamily:"'DM Sans',sans-serif",fontSize:13}}>
             Log at least 2 days of weight to see your chart
           </div>
         ) : (
@@ -2867,37 +3612,37 @@ function Progress({ logs, setLogs, profile, setProfile, onCelebrate }) {
             <svg width={chartW+36} height={chartH+32} style={{display:"block",overflow:"visible"}}>
               <defs>
                 <linearGradient id="cg2" x1="0%" y1="0%" x2="0%" y2="100%">
-                  <stop offset="0%" stopColor="#f0b429" stopOpacity="0.35"/>
-                  <stop offset="100%" stopColor="#f0b429" stopOpacity="0"/>
+                  <stop offset="0%" stopColor={`${P.acc}`} stopOpacity="0.35"/>
+                  <stop offset="100%" stopColor={`${P.acc}`} stopOpacity="0"/>
                 </linearGradient>
               </defs>
               <g transform="translate(32,4)">
                 {/* Grid lines */}
                 {[0,0.25,0.5,0.75,1].map(t=>(
-                  <line key={t} x1={0} y1={t*chartH} x2={chartW} y2={t*chartH} stroke="rgba(255,255,255,0.04)" strokeWidth="1"/>
+                  <line key={t} x1={0} y1={t*chartH} x2={chartW} y2={t*chartH} stroke={`rgba(${P.ink},0.04)`} strokeWidth="1"/>
                 ))}
                 {/* Area fill */}
                 {chartArea && <path d={chartArea} fill="url(#cg2)"/>}
                 {/* Line */}
-                {chartPath && <path d={chartPath} fill="none" stroke="#f0b429" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>}
+                {chartPath && <path d={chartPath} fill="none" stroke={`${P.acc}`} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>}
                 {/* Points */}
                 {chartPoints.map((p,i)=>(
                   <g key={i}>
-                    <circle cx={p.x} cy={p.y} r="5" fill="#f0b429" stroke="#07070f" strokeWidth="2"/>
+                    <circle cx={p.x} cy={p.y} r="5" fill={`${P.acc}`} stroke={`${P.bg}`} strokeWidth="2"/>
                     {(i===0||i===chartPoints.length-1||chartPoints.length<=10) && (
-                      <text x={p.x} y={p.y-10} textAnchor="middle" fill="#f0b429"
+                      <text x={p.x} y={p.y-10} textAnchor="middle" fill={`${P.acc}`}
                         style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:10,fontWeight:700}}>{p.w}</text>
                     )}
                   </g>
                 ))}
                 {/* Y-axis labels */}
                 {yLabels.map(({v,y})=>(
-                  <text key={v} x={-6} y={y+4} textAnchor="end" fill="#555577"
+                  <text key={v} x={-6} y={y+4} textAnchor="end" fill={`${P.muted}`}
                     style={{fontFamily:"'DM Sans',sans-serif",fontSize:9}}>{v}</text>
                 ))}
                 {/* X-axis labels */}
                 {filtered.length > 1 && [0, filtered.length-1].map(i=>(
-                  <text key={i} x={chartPoints[i]?.x} y={chartH+16} textAnchor={i===0?"start":"end"} fill="#555577"
+                  <text key={i} x={chartPoints[i]?.x} y={chartH+16} textAnchor={i===0?"start":"end"} fill={`${P.muted}`}
                     style={{fontFamily:"'DM Sans',sans-serif",fontSize:9}}>
                     {filtered[i]?.date?.slice(5)}
                   </text>
@@ -2911,24 +3656,24 @@ function Progress({ logs, setLogs, profile, setProfile, onCelebrate }) {
       {/* ── WEEKLY AVERAGES ── */}
       {weeklyAvgs.length > 1 && (
         <div style={{...S.card,padding:18}}>
-          <div style={{...S.val,fontSize:18,color:"#fff",marginBottom:14}}>WEEKLY AVERAGES</div>
+          <div style={{...S.val,fontSize:18,color:`${P.text}`,marginBottom:14}}>WEEKLY AVERAGES</div>
           <div style={{display:"flex",flexDirection:"column",gap:8,maxHeight:220,overflowY:"auto"}}>
             {[...weeklyAvgs].reverse().map((w,i)=>{
               const prev = weeklyAvgs[weeklyAvgs.length-2-i];
               const delta = prev ? w.avg - prev.avg : null;
               return (
-                <div key={w.wk} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 12px",background:"#0e0e1c",borderRadius:10}}>
-                  <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:"#555577",width:60,flexShrink:0}}>{w.wk}</div>
-                  <div style={{flex:1,height:4,background:"rgba(255,255,255,0.06)",borderRadius:2,overflow:"hidden"}}>
-                    <div style={{height:"100%",width:`${Math.min(100,((w.avg-profile.startWeight)/20)*100)}%`,background:"linear-gradient(90deg,#f0b429,#ff6b6b)",borderRadius:2}}/>
+                <div key={w.wk} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 12px",background:`${P.inset}`,borderRadius:14}}>
+                  <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:`${P.muted}`,width:60,flexShrink:0}}>{w.wk}</div>
+                  <div style={{flex:1,height:4,background:`rgba(${P.ink},0.06)`,borderRadius:2,overflow:"hidden"}}>
+                    <div style={{height:"100%",width:`${Math.min(100,((w.avg-profile.startWeight)/20)*100)}%`,background:`linear-gradient(90deg,${P.acc},${P.bad})`,borderRadius:2}}/>
                   </div>
-                  <div style={{...S.val,fontSize:17,color:"#fff",textAlign:"right",minWidth:54}}>{w.avg.toFixed(1)}</div>
+                  <div style={{...S.val,fontSize:17,color:`${P.text}`,textAlign:"right",minWidth:54}}>{w.avg.toFixed(1)}</div>
                   {delta!=null && (
-                    <div style={{...S.val,fontSize:13,color:delta>=0?"#39d98a":"#ff6b6b",minWidth:40,textAlign:"right"}}>
+                    <div style={{...S.val,fontSize:13,color:delta>=0?`${P.good}`:`${P.bad}`,minWidth:40,textAlign:"right"}}>
                       {delta>=0?"+":""}{delta.toFixed(1)}
                     </div>
                   )}
-                  <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:"#333355",minWidth:28}}>{w.count}d</div>
+                  <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:`rgba(${P.ink},0.3)`,minWidth:28}}>{w.count}d</div>
                 </div>
               );
             })}
@@ -2939,12 +3684,12 @@ function Progress({ logs, setLogs, profile, setProfile, onCelebrate }) {
       {/* ── DAILY LOG TABLE ── */}
       <div style={{...S.card,padding:18}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
-          <div style={{...S.val,fontSize:18,color:"#fff"}}>DAILY WEIGHT LOG</div>
-          <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:"#555577"}}>{allWeightData.length} entries · tap to edit</div>
+          <div style={{...S.val,fontSize:18,color:`${P.text}`}}>DAILY WEIGHT LOG</div>
+          <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:`${P.muted}`}}>{allWeightData.length} entries · tap to edit</div>
         </div>
 
         {allWeightData.length === 0 ? (
-          <div style={{textAlign:"center",padding:"24px 0",color:"#333344",fontFamily:"'DM Sans',sans-serif",fontSize:13}}>
+          <div style={{textAlign:"center",padding:"24px 0",color:`rgba(${P.ink},0.2)`,fontFamily:"'DM Sans',sans-serif",fontSize:13}}>
             No weight entries yet. Start logging from the Log tab or use + Add Entry above.
           </div>
         ) : (
@@ -2959,14 +3704,14 @@ function Progress({ logs, setLogs, profile, setProfile, onCelebrate }) {
               return (
                 <div key={entry.date} style={{
                   display:"flex",alignItems:"center",gap:10,padding:"10px 12px",
-                  background: isToday2 ? "#4fc3f718" : (idx%2===0?"#0e0e1c":"#0b0b18"),
-                  borderRadius:12,
-                  border: isToday2 ? "1px solid #4fc3f744" : "1px solid transparent",
+                  background: isToday2 ? `${P.info}18` : (idx%2===0?`${P.inset}`:`${P.inset2}`),
+                  borderRadius:16,
+                  border: isToday2 ? `1px solid ${P.info}44` : "1px solid transparent",
                   animation:`fadeUp 0.25s ${Math.min(idx,10)*0.03}s both`,
                 }}>
                   {/* Date */}
                   <div style={{flex:1,minWidth:0}}>
-                    <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:isToday2?"#4fc3f7":"#888aaa",fontWeight:isToday2?600:400,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                    <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:isToday2?`${P.info}`:`${P.sub}`,fontWeight:isToday2?600:400,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
                       {isToday2 ? "Today — " : ""}{label}
                     </div>
                   </div>
@@ -2974,7 +3719,7 @@ function Progress({ logs, setLogs, profile, setProfile, onCelebrate }) {
                   {/* Delta */}
                   <div style={{width:44,textAlign:"right"}}>
                     {delta!=null && (
-                      <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:13,fontWeight:700,color:delta>0?"#39d98a":delta<0?"#ff6b6b":"#555577"}}>
+                      <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:13,fontWeight:700,color:delta>0?`${P.good}`:delta<0?`${P.bad}`:`${P.muted}`}}>
                         {delta>0?"+":""}{delta.toFixed(1)}
                       </span>
                     )}
@@ -2985,19 +3730,19 @@ function Progress({ logs, setLogs, profile, setProfile, onCelebrate }) {
                     <div style={{display:"flex",gap:6,alignItems:"center"}}>
                       <input autoFocus type="number" step="0.1" value={editVal} onChange={e=>setEditVal(e.target.value)}
                         onKeyDown={e=>{ if(e.key==="Enter") saveEditEntry(entry.date); if(e.key==="Escape") setEditingEntry(null); }}
-                        style={{width:72,padding:"5px 8px",background:"#1a1a2e",border:"1px solid #f0b429",borderRadius:8,color:"#f0b429",fontFamily:"'Barlow Condensed',sans-serif",fontSize:18,fontWeight:700,outline:"none",textAlign:"center"}}/>
-                      <button onClick={()=>saveEditEntry(entry.date)} style={{background:"#39d98a",border:"none",borderRadius:7,padding:"5px 9px",cursor:"pointer",color:"#000",fontSize:13,fontWeight:700}}>✓</button>
-                      <button onClick={()=>setEditingEntry(null)} style={{background:"#1a1a2e",border:"none",borderRadius:7,padding:"5px 9px",cursor:"pointer",color:"#888aaa",fontSize:13}}>✕</button>
+                        style={{width:72,padding:"5px 8px",background:`rgba(${P.ink},0.13)`,border:`1px solid ${P.acc}`,borderRadius:8,color:`${P.acc}`,fontFamily:"'Barlow Condensed',sans-serif",fontSize:18,fontWeight:700,outline:"none",textAlign:"center"}}/>
+                      <button onClick={()=>saveEditEntry(entry.date)} style={{background:`${P.good}`,border:"none",borderRadius:7,padding:"5px 9px",cursor:"pointer",color:`${P.onAcc}`,fontSize:13,fontWeight:700}}>✓</button>
+                      <button onClick={()=>setEditingEntry(null)} style={{background:`rgba(${P.ink},0.13)`,border:"none",borderRadius:7,padding:"5px 9px",cursor:"pointer",color:`${P.sub}`,fontSize:13}}>✕</button>
                     </div>
                   ) : (
                     <div style={{display:"flex",alignItems:"center",gap:6}}>
                       <div onClick={()=>{ setEditingEntry(entry.date); setEditVal(String(entry.w)); }}
-                        style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:22,fontWeight:900,color:"#fff",cursor:"pointer",padding:"2px 8px",borderRadius:8,transition:"background 0.15s"}}
-                        onMouseEnter={e=>e.currentTarget.style.background="#1a1a2e"}
+                        style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:22,fontWeight:900,color:`${P.text}`,cursor:"pointer",padding:"2px 8px",borderRadius:8,transition:"background 0.15s"}}
+                        onMouseEnter={e=>e.currentTarget.style.background=`rgba(${P.ink},0.13)`}
                         onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
-                        {entry.w}<span style={{fontSize:12,color:"#555577",fontWeight:400}}> lbs</span>
+                        {entry.w}<span style={{fontSize:12,color:`${P.muted}`,fontWeight:400}}> lbs</span>
                       </div>
-                      <button onClick={()=>deleteEntry(entry.date)} style={{background:"none",border:"none",cursor:"pointer",color:"#ff6b6b",fontSize:14,opacity:0.4,padding:"2px 4px",lineHeight:1}}
+                      <button onClick={()=>deleteEntry(entry.date)} style={{background:"none",border:"none",cursor:"pointer",color:`${P.bad}`,fontSize:14,opacity:0.4,padding:"2px 4px",lineHeight:1}}
                         onMouseEnter={e=>e.currentTarget.style.opacity="1"}
                         onMouseLeave={e=>e.currentTarget.style.opacity="0.4"}>🗑</button>
                     </div>
@@ -3011,20 +3756,20 @@ function Progress({ logs, setLogs, profile, setProfile, onCelebrate }) {
 
       {/* ── MILESTONE BADGES ── */}
       <div style={{...S.card,padding:18}}>
-        <div style={{...S.val,fontSize:18,color:"#fff",marginBottom:14}}>MILESTONE BADGES</div>
+        <div style={{...S.val,fontSize:18,color:`${P.text}`,marginBottom:14}}>MILESTONE BADGES</div>
         <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10}}>
           {badges.map(b=>{
             const unlocked = gained >= b.lbs;
             return (
               <div key={b.lbs} style={{
-                textAlign:"center",padding:"14px 8px",borderRadius:14,
-                background: unlocked?"#f0b42918":"rgba(255,255,255,0.03)",
-                border: unlocked?"1px solid #f0b42944":"1px solid #1a1a2e",
+                textAlign:"center",padding:"14px 8px",borderRadius:20,
+                background: unlocked?`${P.acc}18`:`rgba(${P.ink},0.03)`,
+                border: unlocked?`1px solid ${P.acc}44`:`1px solid rgba(${P.ink},0.16)`,
                 transition:"all 0.3s",
               }}>
                 <div style={{fontSize:30,filter:unlocked?"none":"grayscale(1) opacity(0.2)",transition:"all 0.3s"}}>{b.emoji}</div>
-                <div style={{...S.val,fontSize:15,color:unlocked?"#f0b429":"#333344",marginTop:4}}>{b.lbs===20?"GOAL!":"+"+b.lbs+" lb"}</div>
-                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:unlocked?"#888aaa":"#333344"}}>{b.label}</div>
+                <div style={{...S.val,fontSize:15,color:unlocked?`${P.acc}`:`rgba(${P.ink},0.2)`,marginTop:4}}>{b.lbs===20?"GOAL!":"+"+b.lbs+" lb"}</div>
+                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:unlocked?`${P.sub}`:`rgba(${P.ink},0.2)`}}>{b.label}</div>
               </div>
             );
           })}
@@ -3034,8 +3779,8 @@ function Progress({ logs, setLogs, profile, setProfile, onCelebrate }) {
       {/* ── PROFILE SETTINGS ── */}
       <div style={{...S.card,padding:18}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:editProfile?14:0}}>
-          <div style={{...S.val,fontSize:18,color:"#fff"}}>PROFILE SETTINGS</div>
-          <button onClick={()=>setEditProfile(!editProfile)} style={{background:"#1a1a2e",border:"none",color:"#888aaa",padding:"6px 14px",borderRadius:8,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontSize:12,fontWeight:600}}>
+          <div style={{...S.val,fontSize:18,color:`${P.text}`}}>PROFILE SETTINGS</div>
+          <button onClick={()=>setEditProfile(!editProfile)} style={{background:`rgba(${P.ink},0.13)`,border:"none",color:`${P.sub}`,padding:"6px 14px",borderRadius:8,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontSize:12,fontWeight:600}}>
             {editProfile?"Cancel":"Edit"}
           </button>
         </div>
@@ -3043,23 +3788,27 @@ function Progress({ logs, setLogs, profile, setProfile, onCelebrate }) {
           <div style={{display:"flex",flexDirection:"column",gap:12,animation:"fadeUp 0.3s ease"}}>
             <div>
               <label style={{...S.label,display:"block",marginBottom:5}}>Starting Weight (lbs)</label>
-              <input type="number" value={sw} onChange={e=>setSw(e.target.value)} style={{width:"100%",padding:"10px 14px",background:"#0e0e1c",border:"1px solid #2a2a3e",borderRadius:10,color:"#fff",fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,outline:"none"}}/>
+              <input type="number" value={sw} onChange={e=>setSw(e.target.value)} style={{width:"100%",padding:"10px 14px",background:`${P.inset}`,border:`1px solid rgba(${P.ink},0.22)`,borderRadius:14,color:`${P.text}`,fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,outline:"none"}}/>
             </div>
             <div>
               <label style={{...S.label,display:"block",marginBottom:5}}>Program Start Date</label>
-              <input type="date" value={sd} onChange={e=>setSd(e.target.value)} style={{width:"100%",padding:"10px 14px",background:"#0e0e1c",border:"1px solid #2a2a3e",borderRadius:10,color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:14,outline:"none"}}/>
+              <input type="date" value={sd} onChange={e=>setSd(e.target.value)} style={{width:"100%",padding:"10px 14px",background:`${P.inset}`,border:`1px solid rgba(${P.ink},0.22)`,borderRadius:14,color:`${P.text}`,fontFamily:"'DM Sans',sans-serif",fontSize:14,outline:"none"}}/>
             </div>
-            <button onClick={saveProfile} style={{padding:"12px",background:"linear-gradient(135deg,#f0b429,#ff8f00)",border:"none",borderRadius:10,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:800,color:"#000",letterSpacing:1}}>SAVE PROFILE</button>
+            <button onClick={saveProfile} style={{padding:"12px",background:`linear-gradient(135deg,${P.acc},${P.acc2})`,border:"none",borderRadius:14,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:800,color:`${P.onAcc}`,letterSpacing:1}}>SAVE PROFILE</button>
           </div>
         )}
         {!editProfile && (
           <div style={{display:"flex",gap:24,marginTop:12}}>
-            <div><div style={{...S.label}}>Start</div><div style={{...S.val,fontSize:22,color:"#fff"}}>{profile.startWeight} lbs</div></div>
-            <div><div style={{...S.label}}>Goal</div><div style={{...S.val,fontSize:22,color:"#f0b429"}}>{profile.startWeight+20} lbs</div></div>
-            <div><div style={{...S.label}}>Since</div><div style={{...S.val,fontSize:18,color:"#4fc3f7"}}>{profile.startDate||"—"}</div></div>
+            <div><div style={{...S.label}}>Start</div><div style={{...S.val,fontSize:22,color:`${P.text}`}}>{profile.startWeight} lbs</div></div>
+            <div><div style={{...S.label}}>Goal</div><div style={{...S.val,fontSize:22,color:`${P.acc}`}}>{profile.startWeight+20} lbs</div></div>
+            <div><div style={{...S.label}}>Since</div><div style={{...S.val,fontSize:18,color:`${P.info}`}}>{profile.startDate||"—"}</div></div>
           </div>
         )}
       </div>
+
+      {/* ── WATCH SETTINGS (Advanced: Galaxy / Apple Watch, Apple Watch setup) ── */}
+      <AppearanceCard/>
+      <WatchSettingsCard/>
 
       {/* ── IMPORT FROM WATCH ── */}
       <WatchImportCard logs={logs} setLogs={setLogs} onCelebrate={onCelebrate}/>
@@ -3118,18 +3867,18 @@ function App() {
   useStaggerIn(viewRef, loaded ? view : null);
 
   if(!loaded) return (
-    <div style={{height:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#07070f",flexDirection:"column",gap:16}}>
-      <div style={{width:48,height:48,borderRadius:"50%",border:"3px solid #f0b42933",borderTopColor:"#f0b429",animation:"spin 0.8s linear infinite"}}/>
-      <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,color:"#888aaa",letterSpacing:2}}>LOADING YOUR PLAN...</div>
+    <div style={{height:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"transparent",flexDirection:"column",gap:16}}>
+      <div style={{width:48,height:48,borderRadius:"50%",border:`3px solid ${P.acc}33`,borderTopColor:`${P.acc}`,animation:"spin 0.8s linear infinite"}}/>
+      <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,color:`${P.sub}`,letterSpacing:2}}>LOADING YOUR PLAN...</div>
     </div>
   );
 
   return (
-    <div style={{minHeight:"100vh",background:"#07070f",display:"flex",flexDirection:"column",maxWidth:480,margin:"0 auto",fontFamily:"'DM Sans',sans-serif",color:"#ffffff",position:"relative"}}>
+    <div style={{minHeight:"100vh",background:"transparent",display:"flex",flexDirection:"column",maxWidth:480,margin:"0 auto",fontFamily:"'DM Sans',sans-serif",color:`${P.text}`,position:"relative"}}>
       <GlobalStyle/>
       {celebration && <Celebration data={celebration} onDone={handleCelebDone}/>}
       {activeTimer && <TimerIsland timer={activeTimer} onStop={stopTimer} onCancel={cancelTimer} onAdjust={adjustTimer}/>}
-      <div ref={viewRef} style={{flex:1, overflowY:"auto", paddingTop: activeTimer ? 58 : 0, paddingBottom:4, transition:"padding-top 0.3s ease"}}>
+      <div ref={viewRef} style={{flex:1, overflowY:"auto", paddingTop: activeTimer ? 58 : 0, paddingBottom:"calc(96px + env(safe-area-inset-bottom))", transition:"padding-top 0.3s ease"}}>
         {view==="dashboard" && <Dashboard logs={logs} profile={profile} setView={setView} setSelectedDate={setSelectedDate} setLogs={setLogs} onCelebrate={handleCelebrate} activity={activity} health={health}/>}
         {view==="log" && <DailyLog selectedDate={selectedDate} logs={logs} setLogs={setLogs} onCelebrate={handleCelebrate} profile={profile} activeTimer={activeTimer} onStartTimer={startTimer} onStopTimer={cancelTimer}/>}
         {view==="calendar" && <Calendar logs={logs} selectedDate={selectedDate} setSelectedDate={setSelectedDate} setView={setView}/>}
