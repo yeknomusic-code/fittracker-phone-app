@@ -1778,7 +1778,9 @@ function WatchSettingsCard() {
     <div style={{background: `${P.card}`, borderRadius: 28, padding: "16px 18px", border: `1px solid rgba(${P.ink},0.16)`}}>
       <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: `${P.sub}`, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5}}>Watch</div>
       <div style={{fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, fontWeight: 800, color: `${P.text}`, marginBottom: 2}}>WATCH SETTINGS</div>
-      <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: `${P.sub}`}}>Using: {WATCH_NAME[kind]}{paired ? " \u00b7 linked" : ""}</div>
+      <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: `${P.sub}`, marginBottom: 8}}>Using: {WATCH_NAME[kind]}</div>
+      {(() => { const t = {live:[P.good,"\u25cf LIVE"],connecting:[P.acc,"\u25cb CONNECTING\u2026"],offline:[P.bad,"\u25cb OFFLINE"],error:[P.bad,"\u25cb ERROR"],off:[P.muted,paired?"\u25cf PAIRED":"\u25cb NOT PAIRED"]}[live] || [P.muted,"\u25cb NOT PAIRED"];
+        return <div style={{display:"inline-flex",alignItems:"center",background:`${t[0]}1a`,border:`1px solid ${t[0]}55`,borderRadius:28,padding:"5px 11px",fontFamily:"'Barlow Condensed',sans-serif",fontSize:13,fontWeight:800,letterSpacing:1,color:t[0]}}>{t[1]}</div>; })()}
       <div onClick={() => setAdv(a => !a)} style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: `${P.faint}`, marginTop: 14, cursor: "pointer", userSelect: "none"}}>
         {adv ? "▾" : "▸"} Advanced
       </div>
@@ -2298,7 +2300,7 @@ function DataCard({ logs, setLogs, onCelebrate }) {
 }
 
 /* ─── DASHBOARD ──────────────────────────────────────────────────────────── */
-function Dashboard({ logs, profile, setView, setSelectedDate, setLogs, onCelebrate, activity, health }) {
+function Dashboard({ logs, profile, profileSetUp, setView, setSelectedDate, setLogs, onCelebrate, activity, health }) {
   const today = todayKey();
   const log = logs[today] || {};
   const dow = DOW(today);
@@ -2328,8 +2330,9 @@ function Dashboard({ logs, profile, setView, setSelectedDate, setLogs, onCelebra
     if(streak>365) break;
   }
 
+  const goal = profile.goalWeight || profile.startWeight + 20;
   const gained = profile.currentWeight ? Math.max(0, profile.currentWeight - profile.startWeight) : 0;
-  const gainPct = Math.min(100, Math.round(gained/20*100));
+  const gainPct = Math.min(100, Math.round(gained/Math.max(1,goal-profile.startWeight)*100));
 
   const quickLog = () => { setSelectedDate(today); setView("log"); };
 
@@ -2349,6 +2352,18 @@ function Dashboard({ logs, profile, setView, setSelectedDate, setLogs, onCelebra
           </div>
         )}
       </div>
+
+      {!profileSetUp && (
+        <button onClick={() => setView("progress")} style={{display:"flex",alignItems:"center",gap:12,textAlign:"left",
+          background:`rgba(${P.accRgb},0.14)`,border:`1px solid rgba(${P.accRgb},0.4)`,borderRadius:20,padding:"14px 16px",cursor:"pointer"}}>
+          <div style={{fontSize:24}}>👋</div>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:800,color:P.text}}>Set up your profile</div>
+            <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:P.sub}}>Add your name, starting weight and goal to get accurate progress tracking.</div>
+          </div>
+          <div style={{color:P.acc,fontSize:20}}>→</div>
+        </button>
+      )}
 
       {/* Today's workout card */}
       <SpotlightCard onClick={quickLog} glow={`${P.glow2}`} style={{background:`${P.card}`,borderRadius:28,padding:"20px 20px 18px",cursor:"pointer"}}>
@@ -2428,7 +2443,7 @@ function Dashboard({ logs, profile, setView, setSelectedDate, setLogs, onCelebra
         </div>
         <div style={{display:"flex",justifyContent:"space-between",marginTop:6}}>
           <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:`${P.muted}`}}>{profile.startWeight} lbs</span>
-          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:`${P.muted}`}}>Goal: {profile.startWeight+20} lbs</span>
+          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:`${P.muted}`}}>Goal: {goal} lbs</span>
         </div>
       </div>
 
@@ -3309,10 +3324,12 @@ function Calendar({ logs, selectedDate, setSelectedDate, setView }) {
 }
 
 /* ─── PROGRESS ───────────────────────────────────────────────────────────── */
-function Progress({ logs, setLogs, profile, setProfile, onCelebrate }) {
+function Progress({ logs, setLogs, profile, setProfile, setProfileSetUp, onCelebrate }) {
   const [settingsTab, setSettingsTab] = useState("profile");
   const [editProfile, setEditProfile] = useState(false);
+  const [name, setName] = useState(profile.name||"");
   const [sw, setSw] = useState(String(profile.startWeight));
+  const [gw, setGw] = useState(String(profile.goalWeight||profile.startWeight+20));
   const [sd, setSd] = useState(profile.startDate||todayKey());
   const [chartRange, setChartRange] = useState("all");
   const [editingEntry, setEditingEntry] = useState(null); // date key being edited
@@ -3333,8 +3350,9 @@ function Progress({ logs, setLogs, profile, setProfile, onCelebrate }) {
     : allWeightData.slice(-7);
 
   const currentWeight = allWeightData.length > 0 ? allWeightData[allWeightData.length-1].w : profile.startWeight;
+  const goal = profile.goalWeight || profile.startWeight + 20;
   const gained = currentWeight - profile.startWeight;
-  const gainPct = Math.min(100, Math.max(0, gained / 20 * 100));
+  const gainPct = Math.min(100, Math.max(0, gained / Math.max(1,goal-profile.startWeight) * 100));
   const daysLogged = Object.keys(logs).length;
   const totalWorkouts = Object.values(logs).reduce((acc,l,_,arr) => {
     const key = Object.keys(logs)[Object.values(logs).indexOf(l)];
@@ -3373,9 +3391,10 @@ function Progress({ logs, setLogs, profile, setProfile, onCelebrate }) {
   })();
 
   const saveProfile = async () => {
-    const newP = {...profile, startWeight:parseFloat(sw)||175, startDate:sd, currentWeight};
+    const newP = {...profile, name:name.trim(), startWeight:parseFloat(sw)||175, goalWeight:parseFloat(gw)||null, startDate:sd, currentWeight};
     setProfile(newP);
     await storageSet("profile", newP);
+    setProfileSetUp && setProfileSetUp(true);
     setEditProfile(false);
   };
 
@@ -3516,7 +3535,7 @@ function Progress({ logs, setLogs, profile, setProfile, onCelebrate }) {
           </div>
           <div style={{textAlign:"right"}}>
             <div style={{...S.label}}>Goal</div>
-            <div style={{...S.val,fontSize:26,color:`${P.good}`}}>{profile.startWeight+20}<span style={{fontSize:14,color:`${P.muted}`}}> lbs</span></div>
+            <div style={{...S.val,fontSize:26,color:`${P.good}`}}>{goal}<span style={{fontSize:14,color:`${P.muted}`}}> lbs</span></div>
           </div>
         </div>
         <div style={{textAlign:"center",marginBottom:14}}>
@@ -3531,7 +3550,7 @@ function Progress({ logs, setLogs, profile, setProfile, onCelebrate }) {
         </div>
         <div style={{display:"flex",justifyContent:"space-between",marginTop:5}}>
           <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:`${P.muted}`}}>{profile.startWeight} lbs</span>
-          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:`${P.muted}`}}>Goal: {profile.startWeight+20} lbs</span>
+          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:`${P.muted}`}}>Goal: {goal} lbs</span>
         </div>
       </div>
 
@@ -3771,8 +3790,16 @@ function Progress({ logs, setLogs, profile, setProfile, onCelebrate }) {
                 {editProfile && (
                   <div style={{display:"flex",flexDirection:"column",gap:12,animation:"fadeUp 0.3s ease"}}>
                     <div>
+                      <label style={{...S.label,display:"block",marginBottom:5}}>Name</label>
+                      <input type="text" value={name} onChange={e=>setName(e.target.value)} placeholder="Your name" style={{width:"100%",padding:"10px 14px",background:`${P.inset}`,border:`1px solid rgba(${P.ink},0.22)`,borderRadius:14,color:`${P.text}`,fontFamily:"'DM Sans',sans-serif",fontSize:16,outline:"none"}}/>
+                    </div>
+                    <div>
                       <label style={{...S.label,display:"block",marginBottom:5}}>Starting Weight (lbs)</label>
                       <input type="number" value={sw} onChange={e=>setSw(e.target.value)} style={{width:"100%",padding:"10px 14px",background:`${P.inset}`,border:`1px solid rgba(${P.ink},0.22)`,borderRadius:14,color:`${P.text}`,fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,outline:"none"}}/>
+                    </div>
+                    <div>
+                      <label style={{...S.label,display:"block",marginBottom:5}}>Goal Weight (lbs)</label>
+                      <input type="number" value={gw} onChange={e=>setGw(e.target.value)} style={{width:"100%",padding:"10px 14px",background:`${P.inset}`,border:`1px solid rgba(${P.ink},0.22)`,borderRadius:14,color:`${P.text}`,fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,outline:"none"}}/>
                     </div>
                     <div>
                       <label style={{...S.label,display:"block",marginBottom:5}}>Program Start Date</label>
@@ -3782,10 +3809,14 @@ function Progress({ logs, setLogs, profile, setProfile, onCelebrate }) {
                   </div>
                 )}
                 {!editProfile && (
-                  <div style={{display:"flex",gap:24}}>
-                    <div><div style={{...S.label}}>Start</div><div style={{...S.val,fontSize:22,color:`${P.text}`}}>{profile.startWeight} lbs</div></div>
-                    <div><div style={{...S.label}}>Goal</div><div style={{...S.val,fontSize:22,color:`${P.acc}`}}>{profile.startWeight+20} lbs</div></div>
-                    <div><div style={{...S.label}}>Since</div><div style={{...S.val,fontSize:18,color:`${P.info}`}}>{profile.startDate||"—"}</div></div>
+                  <div>
+                    {profile.name && <div style={{...S.val,fontSize:20,color:P.text,marginBottom:10}}>{profile.name}</div>}
+                    <div style={{display:"flex",gap:24,flexWrap:"wrap"}}>
+                      <div><div style={{...S.label}}>Start</div><div style={{...S.val,fontSize:22,color:`${P.text}`}}>{profile.startWeight} lbs</div></div>
+                      <div><div style={{...S.label}}>Goal</div><div style={{...S.val,fontSize:22,color:`${P.acc}`}}>{goal} lbs</div></div>
+                      <div><div style={{...S.label}}>Since</div><div style={{...S.val,fontSize:18,color:`${P.info}`}}>{profile.startDate||"—"}</div></div>
+                      <div><div style={{...S.label}}>To go</div><div style={{...S.val,fontSize:22,color:`${P.good}`}}>{Math.max(0,goal-currentWeight)} lbs</div></div>
+                    </div>
                   </div>
                 )}
               </div>
@@ -3807,7 +3838,8 @@ function App() {
   const [view, setView] = useState("dashboard");
   const [selectedDate, setSelectedDate] = useState(todayKey());
   const [logs, setLogs] = useState({});
-  const [profile, setProfile] = useState({ startWeight:175, startDate:todayKey(), currentWeight:175 });
+  const [profile, setProfile] = useState({ name:"", startWeight:175, goalWeight:null, startDate:todayKey(), currentWeight:175 });
+  const [profileSetUp, setProfileSetUp] = useState(true); // false only once we know for sure no profile was ever saved
   const [celebration, setCelebration] = useState(null);
   const [loaded, setLoaded] = useState(false);
   const [activeTimer, setActiveTimer] = useState(null); // { exercise, setNum, totalSets, color }
@@ -3818,7 +3850,7 @@ function App() {
       const l = await storageGet("logs");
       const p = await storageGet("profile");
       if(l) setLogs(l);
-      if(p) setProfile(p);
+      if(p) setProfile(p); else setProfileSetUp(false);
       setLoaded(true);
     })();
   }, []);
@@ -3861,10 +3893,10 @@ function App() {
       {celebration && <Celebration data={celebration} onDone={handleCelebDone}/>}
       {activeTimer && <TimerIsland timer={activeTimer} onStop={stopTimer} onCancel={cancelTimer} onAdjust={adjustTimer}/>}
       <div ref={viewRef} style={{flex:1, overflowY:"auto", paddingTop: activeTimer ? 58 : 0, paddingBottom:"calc(96px + env(safe-area-inset-bottom))", transition:"padding-top 0.3s ease"}}>
-        {view==="dashboard" && <Dashboard logs={logs} profile={profile} setView={setView} setSelectedDate={setSelectedDate} setLogs={setLogs} onCelebrate={handleCelebrate} activity={activity} health={health}/>}
+        {view==="dashboard" && <Dashboard logs={logs} profile={profile} profileSetUp={profileSetUp} setView={setView} setSelectedDate={setSelectedDate} setLogs={setLogs} onCelebrate={handleCelebrate} activity={activity} health={health}/>}
         {view==="log" && <DailyLog selectedDate={selectedDate} logs={logs} setLogs={setLogs} onCelebrate={handleCelebrate} profile={profile} activeTimer={activeTimer} onStartTimer={startTimer} onStopTimer={cancelTimer}/>}
         {view==="calendar" && <Calendar logs={logs} selectedDate={selectedDate} setSelectedDate={setSelectedDate} setView={setView}/>}
-        {view==="progress" && <Progress logs={logs} setLogs={setLogs} profile={profile} setProfile={setProfile} onCelebrate={handleCelebrate}/>}
+        {view==="progress" && <Progress logs={logs} setLogs={setLogs} profile={profile} setProfile={setProfile} setProfileSetUp={setProfileSetUp} onCelebrate={handleCelebrate}/>}
       </div>
       <Nav view={view} setView={setView}/>
     </div>
