@@ -2401,11 +2401,8 @@ function Dashboard({ logs, profile, profileSetUp, setView, setSelectedDate, setL
 
       {window.FTWLive && FTWLive.isPaired() && <ActivityCard activity={activity}/>}
 
-      {/* Gym check-in barcodes + watch sync, side by side to save space */}
-      <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, alignItems:"start"}}>
-        <GymCardsCard/>
-        <WatchSyncCard logs={logs} setLogs={setLogs} onCelebrate={onCelebrate} health={health}/>
-      </div>
+      <WatchSyncCard logs={logs} setLogs={setLogs} onCelebrate={onCelebrate} health={health}/>
+      <GymCardsCard/>
 
       {/* Macro rings row */}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
