@@ -1360,9 +1360,10 @@ function monogram(name) {
 }
 
 function GymLogo({card, size = 48}) {
+  // Uploaded logos keep their own transparency — no opaque backing, so they blend into the glass theme.
   if (card.logo) return (
-    <div style={{width:size, height:size, borderRadius:size * 0.3, background:"#fff", flexShrink:0, overflow:"hidden",
-      display:"flex", alignItems:"center", justifyContent:"center", border:`1px solid rgba(${P.ink},0.16)`}}>
+    <div style={{width:size, height:size, borderRadius:size * 0.3, flexShrink:0, overflow:"hidden",
+      display:"flex", alignItems:"center", justifyContent:"center"}}>
       <img src={card.logo} alt="" style={{width:"100%", height:"100%", objectFit:"contain"}}/>
     </div>
   );
@@ -1407,6 +1408,30 @@ function GymPass({card, onClose, onEdit}) {
     </div>
 
   , document.body);
+}
+
+// Tap a gym icon → small floating menu: pick it as today's gym, show its card, or edit it.
+function GymHoverMenu({card, isToday, onUseToday, onShow, onEdit, onClose}) {
+  const mbtn = (primary) => ({
+    width:"100%", padding:"11px 14px", borderRadius:14, cursor:"pointer", textAlign:"left",
+    border: primary ? "none" : `1px solid rgba(${P.ink},0.18)`, background: primary ? P.acc : `rgba(${P.ink},0.08)`,
+    color: primary ? P.onAcc : P.text, fontFamily:"'DM Sans',sans-serif", fontSize:14, fontWeight:700,
+  });
+  return ReactDOM.createPortal(
+    <div role="dialog" aria-modal="true" aria-label={`${card.name} menu`} onClick={onClose}
+      style={{position:"fixed", inset:0, zIndex:850, background:"rgba(0,0,0,0.55)", display:"flex", alignItems:"center", justifyContent:"center", padding:16}}>
+      <div onClick={e => e.stopPropagation()} style={{width:"100%", maxWidth:300, background:P.island, borderRadius:24, padding:18, border:`1px solid rgba(${P.ink},0.18)`, boxShadow:"0 20px 50px rgba(0,0,0,0.4)"}}>
+        <div style={{display:"flex", alignItems:"center", gap:12, marginBottom:16}}>
+          <GymLogo card={card} size={48}/>
+          <div style={{fontFamily:"'Barlow Condensed',sans-serif", fontSize:18, fontWeight:800, color:P.text, lineHeight:1.1}}>{card.name}</div>
+        </div>
+        <div style={{display:"flex", flexDirection:"column", gap:8}}>
+          <button onClick={onUseToday} style={mbtn(!isToday)}>{isToday ? "✓ Today's gym" : "Use for today"}</button>
+          {card.code && <button onClick={onShow} style={mbtn(false)}>Show card</button>}
+          <button onClick={onEdit} style={mbtn(false)}>Edit</button>
+        </div>
+      </div>
+    </div>, document.body);
 }
 
 // Reads barcodes from the camera or a picture. Uses the phone's built-in reader when it has
@@ -1672,37 +1697,56 @@ function GymEditor({card, isNew, onSave, onDelete, onClose}) {
   , document.body);
 }
 
+const GYM_TODAY_KEY = "gymToday";
+function loadTodayGym() {
+  try { const v = JSON.parse(localStorage.getItem(GYM_TODAY_KEY)); if (v && v.date === todayKey()) return v.id; } catch (e) {}
+  return null;
+}
+
 function GymCardsCard() {
   const [cards, setCards] = useState(loadGymCards);
-  const [showing, setShowing] = useState(null);   // card id
+  const [menuFor, setMenuFor] = useState(null);   // card id: hover menu open
+  const [showing, setShowing] = useState(null);   // card id: full pass shown
   const [editing, setEditing] = useState(null);   // {card, isNew}
+  const [todayId, setTodayId] = useState(loadTodayGym);
   const persist = next => { setCards(next); try { localStorage.setItem(GYM_KEY, JSON.stringify(next)); } catch (e) { alert("Couldn't save. Try a smaller logo image."); } };
-  const open = c => c.code && c.svg ? setShowing(c.id) : setEditing({card: c, isNew: false});
+  const menuCard = cards.find(c => c.id === menuFor);
   const shown = cards.find(c => c.id === showing);
+  const useToday = id => { setTodayId(id); try { localStorage.setItem(GYM_TODAY_KEY, JSON.stringify({date: todayKey(), id})); } catch (e) {} setMenuFor(null); };
 
   return (
     <div style={{background:P.card, borderRadius:28, padding:"16px 16px 14px", border:`1px solid rgba(${P.ink},0.16)`}}>
       <div style={{display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:12, padding:"0 2px"}}>
         <div style={{fontFamily:"'Barlow Condensed',sans-serif", fontSize:20, fontWeight:800, color:P.text}}>Gym cards</div>
-        <button onClick={() => setEditing({card: {id: "g" + Date.now().toString(36), name: "", code: "", format: "code128", logo: null, svg: null}, isNew: true})}
-          style={{padding:"6px 14px", background:`rgba(${P.accRgb},0.14)`, border:`1px solid rgba(${P.accRgb},0.4)`, color:P.acc, fontFamily:"'DM Sans',sans-serif", fontSize:12, fontWeight:700, cursor:"pointer"}}>+ Add gym</button>
       </div>
       {cards.length === 0 && <div style={{fontFamily:"'DM Sans',sans-serif", fontSize:13, color:P.muted, padding:"4px 2px 6px"}}>Add your gym to keep its check-in barcode here.</div>}
-      <div style={{display:"flex", flexDirection:"column", gap:8}}>
+      <div style={{display:"flex", gap:14, overflowX:"auto", padding:"2px 2px 4px"}}>
         {cards.map(c => (
-          <button key={c.id} onClick={() => open(c)} aria-label={c.code ? `Show ${c.name} pass` : `Add barcode for ${c.name}`}
-            style={{display:"flex", alignItems:"center", gap:12, width:"100%", padding:"10px 14px 10px 10px", textAlign:"left", cursor:"pointer",
-              background:`rgba(${P.ink},0.06)`, border:`1px solid rgba(${P.ink},0.12)`, color:P.text}}>
-            <GymLogo card={c} size={42}/>
-            <div style={{flex:1, minWidth:0}}>
-              <div style={{fontFamily:"'DM Sans',sans-serif", fontSize:15, fontWeight:700, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis"}}>{c.name}</div>
-              <div style={{fontFamily:"'DM Sans',sans-serif", fontSize:12, color: c.code ? P.muted : P.acc, marginTop:1}}>{c.code ? `•••• ${c.code.slice(-4)}` : "Add your barcode"}</div>
+          <button key={c.id} onClick={() => setMenuFor(c.id)} aria-label={`${c.name} menu`}
+            style={{display:"flex", flexDirection:"column", alignItems:"center", gap:6, flexShrink:0, width:66, cursor:"pointer",
+              background:"none", border:"none", color:P.text}}>
+            <div style={{position:"relative"}}>
+              <div style={{width:54, height:54, borderRadius:16, background:`rgba(${P.ink},0.08)`, border: c.id===todayId ? `2px solid ${P.acc}` : `1px solid rgba(${P.ink},0.14)`,
+                display:"flex", alignItems:"center", justifyContent:"center", padding:4, boxShadow: c.id===todayId ? `0 0 12px rgba(${P.accRgb},0.45)` : "none"}}>
+                <GymLogo card={c} size={46}/>
+              </div>
+              {c.id===todayId && <div style={{position:"absolute", bottom:-3, right:-3, width:18, height:18, borderRadius:999, background:P.acc, color:P.onAcc, fontSize:11, fontWeight:900, display:"flex", alignItems:"center", justifyContent:"center", border:`2px solid ${P.card}`}}>✓</div>}
             </div>
-            {c.code ? <span style={{fontFamily:"'DM Sans',sans-serif", fontSize:12, fontWeight:700, color:P.onAcc, background:P.acc, padding:"6px 12px", borderRadius:999}}>Show</span>
-                    : <span aria-hidden="true" style={{color:P.acc, fontSize:22, lineHeight:1}}>+</span>}
+            <div style={{fontFamily:"'DM Sans',sans-serif", fontSize:10, fontWeight:600, color:P.sub, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", width:"100%", textAlign:"center"}}>{c.name}</div>
           </button>
         ))}
+        <button onClick={() => setEditing({card: {id: "g" + Date.now().toString(36), name: "", code: "", format: "code128", logo: null, svg: null}, isNew: true})}
+          aria-label="Add gym" style={{display:"flex", flexDirection:"column", alignItems:"center", gap:6, flexShrink:0, width:66, cursor:"pointer", background:"none", border:"none"}}>
+          <div style={{width:54, height:54, borderRadius:16, background:`rgba(${P.accRgb},0.12)`, border:`1px dashed rgba(${P.accRgb},0.5)`,
+            display:"flex", alignItems:"center", justifyContent:"center", color:P.acc, fontSize:24, fontWeight:700}}>+</div>
+          <div style={{fontFamily:"'DM Sans',sans-serif", fontSize:10, fontWeight:600, color:P.acc}}>Add gym</div>
+        </button>
       </div>
+      {menuCard && <GymHoverMenu card={menuCard} isToday={menuCard.id===todayId}
+        onUseToday={() => useToday(menuCard.id)}
+        onShow={() => { setMenuFor(null); setShowing(menuCard.id); }}
+        onEdit={() => { setMenuFor(null); setEditing({card: menuCard, isNew: false}); }}
+        onClose={() => setMenuFor(null)}/>}
       {shown && <GymPass card={shown} onClose={() => setShowing(null)} onEdit={() => { setShowing(null); setEditing({card: shown, isNew: false}); }}/>}
       {editing && <GymEditor card={editing.card} isNew={editing.isNew}
         onClose={() => setEditing(null)}
