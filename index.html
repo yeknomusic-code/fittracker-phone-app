@@ -2422,12 +2422,13 @@ function Dashboard({ logs, profile, setView, setSelectedDate, setLogs, onCelebra
         )}
       </SpotlightCard>
 
-      {/* Gym check-in barcodes */}
-      <GymCardsCard/>
-
-      {/* Watch sync */}
       {window.FTWLive && FTWLive.isPaired() && <ActivityCard activity={activity}/>}
-      <WatchSyncCard logs={logs} setLogs={setLogs} onCelebrate={onCelebrate} health={health}/>
+
+      {/* Gym check-in barcodes + watch sync, side by side to save space */}
+      <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, alignItems:"start"}}>
+        <GymCardsCard/>
+        <WatchSyncCard logs={logs} setLogs={setLogs} onCelebrate={onCelebrate} health={health}/>
+      </div>
 
       {/* Macro rings row */}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
@@ -3776,45 +3777,61 @@ function Progress({ logs, setLogs, profile, setProfile, onCelebrate }) {
         </div>
       </div>
 
-      {/* ── PROFILE SETTINGS ── */}
-      <div style={{...S.card,padding:18}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:editProfile?14:0}}>
-          <div style={{...S.val,fontSize:18,color:`${P.text}`}}>PROFILE SETTINGS</div>
-          <button onClick={()=>setEditProfile(!editProfile)} style={{background:`rgba(${P.ink},0.13)`,border:"none",color:`${P.sub}`,padding:"6px 14px",borderRadius:8,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontSize:12,fontWeight:600}}>
-            {editProfile?"Cancel":"Edit"}
-          </button>
-        </div>
-        {editProfile && (
-          <div style={{display:"flex",flexDirection:"column",gap:12,animation:"fadeUp 0.3s ease"}}>
-            <div>
-              <label style={{...S.label,display:"block",marginBottom:5}}>Starting Weight (lbs)</label>
-              <input type="number" value={sw} onChange={e=>setSw(e.target.value)} style={{width:"100%",padding:"10px 14px",background:`${P.inset}`,border:`1px solid rgba(${P.ink},0.22)`,borderRadius:14,color:`${P.text}`,fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,outline:"none"}}/>
+      {/* ── SETTINGS (collapsed accordion rows to save space) ── */}
+      {(() => { const sumStyle = {cursor:"pointer", listStyle:"none", fontFamily:"'Barlow Condensed',sans-serif", fontSize:16, fontWeight:800, color:P.text, padding:"14px 18px"};
+        const wrap = {...S.card, padding:0, overflow:"hidden"};
+        return (<>
+        <details style={wrap}>
+          <summary style={sumStyle}>PROFILE SETTINGS</summary>
+          <div style={{padding:"0 18px 18px"}}>
+            <div style={{display:"flex",justifyContent:"flex-end",marginBottom:editProfile?14:0}}>
+              <button onClick={()=>setEditProfile(!editProfile)} style={{background:`rgba(${P.ink},0.13)`,border:"none",color:`${P.sub}`,padding:"6px 14px",borderRadius:8,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontSize:12,fontWeight:600}}>
+                {editProfile?"Cancel":"Edit"}
+              </button>
             </div>
-            <div>
-              <label style={{...S.label,display:"block",marginBottom:5}}>Program Start Date</label>
-              <input type="date" value={sd} onChange={e=>setSd(e.target.value)} style={{width:"100%",padding:"10px 14px",background:`${P.inset}`,border:`1px solid rgba(${P.ink},0.22)`,borderRadius:14,color:`${P.text}`,fontFamily:"'DM Sans',sans-serif",fontSize:14,outline:"none"}}/>
-            </div>
-            <button onClick={saveProfile} style={{padding:"12px",background:`linear-gradient(135deg,${P.acc},${P.acc2})`,border:"none",borderRadius:14,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:800,color:`${P.onAcc}`,letterSpacing:1}}>SAVE PROFILE</button>
+            {editProfile && (
+              <div style={{display:"flex",flexDirection:"column",gap:12,animation:"fadeUp 0.3s ease"}}>
+                <div>
+                  <label style={{...S.label,display:"block",marginBottom:5}}>Starting Weight (lbs)</label>
+                  <input type="number" value={sw} onChange={e=>setSw(e.target.value)} style={{width:"100%",padding:"10px 14px",background:`${P.inset}`,border:`1px solid rgba(${P.ink},0.22)`,borderRadius:14,color:`${P.text}`,fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,outline:"none"}}/>
+                </div>
+                <div>
+                  <label style={{...S.label,display:"block",marginBottom:5}}>Program Start Date</label>
+                  <input type="date" value={sd} onChange={e=>setSd(e.target.value)} style={{width:"100%",padding:"10px 14px",background:`${P.inset}`,border:`1px solid rgba(${P.ink},0.22)`,borderRadius:14,color:`${P.text}`,fontFamily:"'DM Sans',sans-serif",fontSize:14,outline:"none"}}/>
+                </div>
+                <button onClick={saveProfile} style={{padding:"12px",background:`linear-gradient(135deg,${P.acc},${P.acc2})`,border:"none",borderRadius:14,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:800,color:`${P.onAcc}`,letterSpacing:1}}>SAVE PROFILE</button>
+              </div>
+            )}
+            {!editProfile && (
+              <div style={{display:"flex",gap:24}}>
+                <div><div style={{...S.label}}>Start</div><div style={{...S.val,fontSize:22,color:`${P.text}`}}>{profile.startWeight} lbs</div></div>
+                <div><div style={{...S.label}}>Goal</div><div style={{...S.val,fontSize:22,color:`${P.acc}`}}>{profile.startWeight+20} lbs</div></div>
+                <div><div style={{...S.label}}>Since</div><div style={{...S.val,fontSize:18,color:`${P.info}`}}>{profile.startDate||"—"}</div></div>
+              </div>
+            )}
           </div>
-        )}
-        {!editProfile && (
-          <div style={{display:"flex",gap:24,marginTop:12}}>
-            <div><div style={{...S.label}}>Start</div><div style={{...S.val,fontSize:22,color:`${P.text}`}}>{profile.startWeight} lbs</div></div>
-            <div><div style={{...S.label}}>Goal</div><div style={{...S.val,fontSize:22,color:`${P.acc}`}}>{profile.startWeight+20} lbs</div></div>
-            <div><div style={{...S.label}}>Since</div><div style={{...S.val,fontSize:18,color:`${P.info}`}}>{profile.startDate||"—"}</div></div>
-          </div>
-        )}
-      </div>
+        </details>
 
-      {/* ── WATCH SETTINGS (Advanced: Galaxy / Apple Watch, Apple Watch setup) ── */}
-      <AppearanceCard/>
-      <WatchSettingsCard/>
+        <details style={wrap}>
+          <summary style={sumStyle}>APPEARANCE</summary>
+          <div style={{padding:"0 18px 18px"}}><AppearanceCard/></div>
+        </details>
 
-      {/* ── IMPORT FROM WATCH ── */}
-      <WatchImportCard logs={logs} setLogs={setLogs} onCelebrate={onCelebrate}/>
+        <details style={wrap}>
+          <summary style={sumStyle}>WATCH SETTINGS</summary>
+          <div style={{padding:"0 18px 18px"}}><WatchSettingsCard/></div>
+        </details>
 
-      {/* ── DATA: BACKUP & RESTORE ── */}
-      <DataCard logs={logs} setLogs={setLogs} onCelebrate={onCelebrate}/>
+        <details style={wrap}>
+          <summary style={sumStyle}>IMPORT FROM WATCH</summary>
+          <div style={{padding:"0 18px 18px"}}><WatchImportCard logs={logs} setLogs={setLogs} onCelebrate={onCelebrate}/></div>
+        </details>
+
+        <details style={wrap}>
+          <summary style={sumStyle}>DATA: BACKUP & RESTORE</summary>
+          <div style={{padding:"0 18px 18px"}}><DataCard logs={logs} setLogs={setLogs} onCelebrate={onCelebrate}/></div>
+        </details>
+        </>); })()}
 
     </div>
   );
