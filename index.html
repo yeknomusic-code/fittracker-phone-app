@@ -1410,13 +1410,13 @@ function GymPass({card, onClose, onEdit}) {
   , document.body);
 }
 
-// Tap a gym icon → small floating menu: pick it as today's gym, show its card, or edit it.
-function GymHoverMenu({card, isToday, onUseToday, onShow, onEdit, onClose}) {
-  const mbtn = (primary) => ({
+// Tap a gym card → small floating menu: show its card, or edit it.
+function GymHoverMenu({card, onShow, onEdit, onClose}) {
+  const mbtn = {
     width:"100%", padding:"11px 14px", borderRadius:14, cursor:"pointer", textAlign:"left",
-    border: primary ? "none" : `1px solid rgba(${P.ink},0.18)`, background: primary ? P.acc : `rgba(${P.ink},0.08)`,
-    color: primary ? P.onAcc : P.text, fontFamily:"'DM Sans',sans-serif", fontSize:14, fontWeight:700,
-  });
+    border:`1px solid rgba(${P.ink},0.18)`, background:`rgba(${P.ink},0.08)`,
+    color:P.text, fontFamily:"'DM Sans',sans-serif", fontSize:14, fontWeight:700,
+  };
   return ReactDOM.createPortal(
     <div role="dialog" aria-modal="true" aria-label={`${card.name} menu`} onClick={onClose}
       style={{position:"fixed", inset:0, zIndex:850, background:"rgba(0,0,0,0.55)", display:"flex", alignItems:"center", justifyContent:"center", padding:16}}>
@@ -1426,9 +1426,8 @@ function GymHoverMenu({card, isToday, onUseToday, onShow, onEdit, onClose}) {
           <div style={{fontFamily:"'Barlow Condensed',sans-serif", fontSize:18, fontWeight:800, color:P.text, lineHeight:1.1}}>{card.name}</div>
         </div>
         <div style={{display:"flex", flexDirection:"column", gap:8}}>
-          <button onClick={onUseToday} style={mbtn(!isToday)}>{isToday ? "✓ Today's gym" : "Use for today"}</button>
-          {card.code && <button onClick={onShow} style={mbtn(false)}>Show card</button>}
-          <button onClick={onEdit} style={mbtn(false)}>Edit</button>
+          {card.code && <button onClick={onShow} style={mbtn}>Show card</button>}
+          <button onClick={onEdit} style={mbtn}>Edit</button>
         </div>
       </div>
     </div>, document.body);
@@ -1697,22 +1696,14 @@ function GymEditor({card, isNew, onSave, onDelete, onClose}) {
   , document.body);
 }
 
-const GYM_TODAY_KEY = "gymToday";
-function loadTodayGym() {
-  try { const v = JSON.parse(localStorage.getItem(GYM_TODAY_KEY)); if (v && v.date === todayKey()) return v.id; } catch (e) {}
-  return null;
-}
-
 function GymCardsCard() {
   const [cards, setCards] = useState(loadGymCards);
   const [menuFor, setMenuFor] = useState(null);   // card id: hover menu open
   const [showing, setShowing] = useState(null);   // card id: full pass shown
   const [editing, setEditing] = useState(null);   // {card, isNew}
-  const [todayId, setTodayId] = useState(loadTodayGym);
   const persist = next => { setCards(next); try { localStorage.setItem(GYM_KEY, JSON.stringify(next)); } catch (e) { alert("Couldn't save. Try a smaller logo image."); } };
   const menuCard = cards.find(c => c.id === menuFor);
   const shown = cards.find(c => c.id === showing);
-  const useToday = id => { setTodayId(id); try { localStorage.setItem(GYM_TODAY_KEY, JSON.stringify({date: todayKey(), id})); } catch (e) {} setMenuFor(null); };
 
   return (
     <div style={{background:P.card, borderRadius:28, padding:"16px 16px 14px", border:`1px solid rgba(${P.ink},0.16)`}}>
@@ -1720,30 +1711,26 @@ function GymCardsCard() {
         <div style={{fontFamily:"'Barlow Condensed',sans-serif", fontSize:20, fontWeight:800, color:P.text}}>Gym cards</div>
       </div>
       {cards.length === 0 && <div style={{fontFamily:"'DM Sans',sans-serif", fontSize:13, color:P.muted, padding:"4px 2px 6px"}}>Add your gym to keep its check-in barcode here.</div>}
-      <div style={{display:"flex", gap:14, overflowX:"auto", padding:"2px 2px 4px"}}>
+      {/* Business-card shaped tiles, swipe left/right when there are more than fit */}
+      <div style={{display:"flex", gap:12, overflowX:"auto", padding:"2px 2px 8px", scrollSnapType:"x mandatory", WebkitOverflowScrolling:"touch"}}>
         {cards.map(c => (
-          <button key={c.id} onClick={() => setMenuFor(c.id)} aria-label={`${c.name} menu`}
-            style={{display:"flex", flexDirection:"column", alignItems:"center", gap:6, flexShrink:0, width:66, cursor:"pointer",
-              background:"none", border:"none", color:P.text}}>
-            <div style={{position:"relative"}}>
-              <div style={{width:54, height:54, borderRadius:16, background:`rgba(${P.ink},0.08)`, border: c.id===todayId ? `2px solid ${P.acc}` : `1px solid rgba(${P.ink},0.14)`,
-                display:"flex", alignItems:"center", justifyContent:"center", padding:4, boxShadow: c.id===todayId ? `0 0 12px rgba(${P.accRgb},0.45)` : "none"}}>
-                <GymLogo card={c} size={46}/>
-              </div>
-              {c.id===todayId && <div style={{position:"absolute", bottom:-3, right:-3, width:18, height:18, borderRadius:999, background:P.acc, color:P.onAcc, fontSize:11, fontWeight:900, display:"flex", alignItems:"center", justifyContent:"center", border:`2px solid ${P.card}`}}>✓</div>}
+          <button key={c.id} onClick={() => setMenuFor(c.id)} aria-label={`${c.name} menu`} style={{
+            display:"flex", alignItems:"center", gap:10, flexShrink:0, width:168, height:100, padding:"12px 14px",
+            borderRadius:18, cursor:"pointer", textAlign:"left", scrollSnapAlign:"start",
+            background:`rgba(${P.ink},0.08)`, border:`1px solid rgba(${P.ink},0.16)`, color:P.text}}>
+            <GymLogo card={c} size={44}/>
+            <div style={{flex:1, minWidth:0}}>
+              <div style={{fontFamily:"'Barlow Condensed',sans-serif", fontSize:15, fontWeight:800, lineHeight:1.15, display:"-webkit-box", WebkitLineClamp:2, WebkitBoxOrient:"vertical", overflow:"hidden"}}>{c.name}</div>
+              <div style={{fontFamily:"'DM Sans',sans-serif", fontSize:11, color:P.muted, marginTop:4}}>{c.code ? `•••• ${c.code.slice(-4)}` : "No card yet"}</div>
             </div>
-            <div style={{fontFamily:"'DM Sans',sans-serif", fontSize:10, fontWeight:600, color:P.sub, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", width:"100%", textAlign:"center"}}>{c.name}</div>
           </button>
         ))}
         <button onClick={() => setEditing({card: {id: "g" + Date.now().toString(36), name: "", code: "", format: "code128", logo: null, svg: null}, isNew: true})}
-          aria-label="Add gym" style={{display:"flex", flexDirection:"column", alignItems:"center", gap:6, flexShrink:0, width:66, cursor:"pointer", background:"none", border:"none"}}>
-          <div style={{width:54, height:54, borderRadius:16, background:`rgba(${P.accRgb},0.12)`, border:`1px dashed rgba(${P.accRgb},0.5)`,
-            display:"flex", alignItems:"center", justifyContent:"center", color:P.acc, fontSize:24, fontWeight:700}}>+</div>
-          <div style={{fontFamily:"'DM Sans',sans-serif", fontSize:10, fontWeight:600, color:P.acc}}>Add gym</div>
-        </button>
+          aria-label="Add gym" style={{display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, width:100, height:100,
+            borderRadius:18, cursor:"pointer", scrollSnapAlign:"start",
+            background:`rgba(${P.accRgb},0.12)`, border:`1px dashed rgba(${P.accRgb},0.5)`, color:P.acc, fontSize:28, fontWeight:700}}>+</button>
       </div>
-      {menuCard && <GymHoverMenu card={menuCard} isToday={menuCard.id===todayId}
-        onUseToday={() => useToday(menuCard.id)}
+      {menuCard && <GymHoverMenu card={menuCard}
         onShow={() => { setMenuFor(null); setShowing(menuCard.id); }}
         onEdit={() => { setMenuFor(null); setEditing({card: menuCard, isNew: false}); }}
         onClose={() => setMenuFor(null)}/>}
