@@ -1,0 +1,3147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+  <meta name="mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="GainsTracker"/>
+  <meta name="theme-color" content="#f0b429"/>
+  <meta name="description" content="Muscle growth fitness tracker — workouts, meals, supplements & weight logging"/>
+
+  <title>💪 Muscle Growth Tracker</title>
+
+  <link rel="manifest" href="/manifest.json"/>
+  <link rel="apple-touch-icon" href="/icon-192.png"/>
+  <link rel="icon" type="image/png" href="/icon-192.png"/>
+
+  <!-- React + Babel via CDN -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Motion: GSAP (count-ups, staggers) + Lenis (smooth wheel/trackpad scrolling; touch stays native) -->
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.15.0/dist/gsap.min.js"></script>
+  <script src="https://unpkg.com/lenis@1.3.27/dist/lenis.min.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/lenis@1.3.27/dist/lenis.css"/>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; background: #07070f; overscroll-behavior: none; }
+    #root { height: 100%; }
+    /* iOS safe areas */
+    #app-wrap {
+      padding-top: env(safe-area-inset-top);
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script>
+    // Register service worker for offline use
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/sw.js')
+          .then(r => console.log('SW registered'))
+          .catch(e => console.log('SW failed:', e));
+      });
+    }
+  </script>
+
+  <!-- Live two-way sync with FitTracker Watch (shared with the watch app). -->
+  <script>
+/*
+ * FTWLive — live two-way sync between FitTracker Watch and the Muscle Growth Tracker phone app.
+ * Shared by both apps (plain ES5 so it runs on older Tizen watches too).
+ *
+ * Uses a Firebase Realtime Database over its REST API (no SDK):
+ *   /sync/<pair code>/d/<YYYY-MM-DD>/<exerciseId>/<setIndex> = { l: lb|null, r: reps|null, d: done, t: ms, b: "w"|"p" }
+ *   /sync/<pair code>/rest = { s: start ms, e: end ms, x: exerciseId, n: set just done, N: total sets,
+ *                              b: "w"|"p", c: true if cancelled }
+ *   /sync/<pair code>/stats/<date>/<w|hc> = daily activity from the watch (w) or Samsung Health (hc):
+ *                              { s: steps, c: kcal, k: km, hr: latest bpm, hrMin: lowest bpm today, t: ms }
+ *   /sync/<pair code>/wt/<date> = { lb: body weight, t: ms, b: "p" phone | "h" Samsung Health }
+ *   /sync/<pair code>/hc = { t: last Samsung Health sync, n: workouts saved, err: message }
+ * Changes stream in with Server-Sent Events; writes queue in an outbox while offline.
+ * The pair code is a long random secret: the database rules only allow access under it.
+ */
+var FTWLive = (function () {
+  'use strict';
+
+  var CFG_KEY = 'ftwLiveCfg', OUT_KEY = 'ftwLiveOutbox', DAYS_BACK = 14;
+  var cfg = load(CFG_KEY, null);
+  var outbox = load(OUT_KEY, {});
+  var h = {};                       // data handlers: onSet, onSync, onRest
+  var statusFns = [];
+  var status = 'off';
+  var extras = [];                  // optional streams: stats, weight, Samsung Health status
+  var esDays = null, esRest = null, flushing = false, flushT = null, restT = null, pendingRest;
+  var fails = 0;
+  var useQuery = true, gotData = false;   // date filter on the stream; dropped if the server refuses it
+
+  function load(k, d) { try { var v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } }
+  function save(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+
+  function setStatus(s) {
+    if (s === status) return;
+    status = s;
+    for (var i = 0; i < statusFns.length; i++) { try { statusFns[i](s); } catch (e) {} }
+  }
+
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function dayKey(ms) { var d = new Date(ms == null ? Date.now() : ms); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+  function base() { return cfg.url.replace(/\/+$/, '') + '/sync/' + cfg.code; }
+
+  function newCode() {
+    var chars = 'abcdefghijkmnpqrstuvwxyz23456789', out = '', bytes = [];
+    try { bytes = Array.prototype.slice.call(window.crypto.getRandomValues(new Uint8Array(28))); } catch (e) {}
+    for (var i = 0; i < 28; i++) out += chars.charAt((bytes[i] != null ? bytes[i] : Math.floor(Math.random() * 256)) % chars.length);
+    return out;
+  }
+
+  /* ---------------- pairing ---------------- */
+  // Watch: build the text for the pairing QR (creates the code the first time).
+  function pairText(url) {
+    if (!url) return null;
+    if (!cfg || cfg.url !== url) { cfg = { url: url, code: (cfg && cfg.code) || newCode() }; save(CFG_KEY, cfg); connect(); }
+    return 'FTWPAIR1|' + cfg.url + '|' + cfg.code;
+  }
+  // Phone: read a scanned pairing QR. Returns true if it was one.
+  function pairFrom(text) {
+    var m = /^FTWPAIR1\|(https?:\/\/[^|\s]+)\|([a-z0-9]{24,})$/.exec(text || '');
+    if (!m) return false;
+    cfg = { url: m[1], code: m[2] }; save(CFG_KEY, cfg);
+    connect();
+    return true;
+  }
+  function unpair() { cfg = null; save(CFG_KEY, null); outbox = {}; save(OUT_KEY, outbox); closeStreams(); setStatus('off'); }
+
+  /* ---------------- streaming ---------------- */
+  function closeStreams() {
+    if (esDays) { esDays.close(); esDays = null; }
+    if (esRest) { esRest.close(); esRest = null; }
+    extras.forEach(function (es) { es.close(); }); extras = [];
+  }
+
+  // Stream a subtree and report each record `depth` levels down: depth 1 = /<date>, 2 = /<date>/<src>.
+  // depth 0 reports the whole node.
+  function openExtra(path, depth, cb, filtered) {
+    var since = dayKey(Date.now() - DAYS_BACK * 864e5);
+    var q = filtered && useQuery ? '?orderBy=' + encodeURIComponent('"$key"') + '&startAt=' + encodeURIComponent('"' + since + '"') : '';
+    var es = new EventSource(base() + '/' + path + '.json' + q);
+    function emit(segs, data) {
+      if (segs.length === depth) { cb(segs, data); return; }
+      if (segs.length > depth || !data || typeof data !== 'object') return;
+      for (var k in data) if (Object.prototype.hasOwnProperty.call(data, k)) emit(segs.concat(String(k)), data[k]);
+    }
+    function on(type) {
+      return function (ev) {
+        var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+        if (!m) return;
+        var segs = (m.path || '/').split('/').filter(Boolean);
+        if (depth === 0 || segs.length > depth) {      // partial change inside a record: re-read the record
+          var rec = segs.slice(0, depth);
+          xhr('GET', base() + '/' + path + (rec.length ? '/' + rec.join('/') : '') + '.json', undefined, function (ok, x) {
+            if (ok) { try { cb(rec, JSON.parse(x.responseText)); } catch (e) {} }
+          });
+          return;
+        }
+        if (type === 'patch') { for (var k in m.data) emit(segs.concat(k.split('/').filter(Boolean)), m.data[k]); }
+        else emit(segs, m.data);
+      };
+    }
+    es.addEventListener('put', on('put'));
+    es.addEventListener('patch', on('patch'));
+    extras.push(es);
+  }
+
+  function walk(segs, data) {
+    if (segs.length === 3) {
+      if (h.onSet && data && typeof data === 'object') h.onSet(segs[0], segs[1], +segs[2], data);
+      return;
+    }
+    if (segs.length > 3 || !data || typeof data !== 'object') return;
+    for (var k in data) if (Object.prototype.hasOwnProperty.call(data, k) && data[k] != null) walk(segs.concat(String(k)), data[k]);
+  }
+
+  function onDays(type) {
+    return function (ev) {
+      var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+      if (!m) return;
+      var segs = (m.path || '/').split('/').filter(Boolean);
+      if (type === 'patch') { for (var k in m.data) walk(segs.concat(k.split('/').filter(Boolean)), m.data[k]); }
+      else walk(segs, m.data);
+      fails = 0; gotData = true; setStatus('live');
+      if (h.onSync) h.onSync();
+    };
+  }
+
+  function onRestEv(ev) {
+    var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+    if (!m) return;
+    if (m.path === '/') { if (h.onRest) h.onRest(m.data); return; }
+    xhr('GET', base() + '/rest.json', undefined, function (ok, x) {   // partial update: fetch the whole record
+      if (ok && h.onRest) { try { h.onRest(JSON.parse(x.responseText)); } catch (e) {} }
+    });
+  }
+
+  function connect() {
+    closeStreams();
+    if (!cfg) { setStatus('off'); return; }
+    if (typeof EventSource === 'undefined') { setStatus('error'); return; }
+    setStatus('connecting');
+    var since = dayKey(Date.now() - DAYS_BACK * 864e5);
+    var q = useQuery ? '?orderBy=' + encodeURIComponent('"$key"') + '&startAt=' + encodeURIComponent('"' + since + '"') : '';
+    esDays = new EventSource(base() + '/d.json' + q);
+    esDays.addEventListener('put', onDays('put'));
+    esDays.addEventListener('patch', onDays('patch'));
+    esDays.addEventListener('cancel', function () { setStatus('error'); });
+    var me = esDays;
+    esDays.onerror = function () {
+      if (me.readyState === 2 && useQuery && !gotData) { useQuery = false; if (esDays === me) connect(); return; }
+      fails++;
+      setStatus(navigator.onLine === false || fails > 1 ? 'offline' : 'connecting');
+      // a refused connection closes the stream for good: reopen it ourselves, backing off
+      if (me.readyState === 2 && esDays === me) setTimeout(function () { if (esDays === me) connect(); }, Math.min(30000, 2000 * fails));
+    };
+    esRest = new EventSource(base() + '/rest.json');
+    esRest.addEventListener('put', onRestEv);
+    esRest.addEventListener('patch', onRestEv);
+    if (h.onStats) openExtra('stats', 2, function (segs, v) { if (v) h.onStats(segs[0], segs[1], v); }, true);
+    if (h.onWeight) openExtra('wt', 1, function (segs, v) { if (v) h.onWeight(segs[0], v); }, true);
+    if (h.onHealth) openExtra('hc', 0, function (segs, v) { h.onHealth(v); }, false);
+    flush();
+  }
+
+  /* ---------------- writes ---------------- */
+  function xhr(method, url, body, cb) {
+    var x = new XMLHttpRequest();
+    try {
+      x.open(method, url, true);
+      x.setRequestHeader('Content-Type', 'application/json');
+      x.timeout = 12000;
+      x.onload = function () { cb(x.status >= 200 && x.status < 300, x); };
+      x.onerror = x.ontimeout = function () { cb(false, x); };
+      x.send(body === undefined ? null : JSON.stringify(body));
+    } catch (e) { cb(false, x); }
+  }
+
+  function scheduleFlush(ms) { clearTimeout(flushT); flushT = setTimeout(flush, ms); }
+
+  function flush() {
+    if (!cfg || flushing) return;
+    var keys = Object.keys(outbox);
+    if (!keys.length) return;
+    flushing = true;
+    var body = {}, sent = {};
+    keys.forEach(function (k) { body[k] = outbox[k]; sent[k] = JSON.stringify(outbox[k]); });
+    // one multi-path update for everything queued
+    xhr('PATCH', base() + '.json', body, function (ok) {
+      flushing = false;
+      if (ok) {
+        keys.forEach(function (k) { if (JSON.stringify(outbox[k]) === sent[k]) delete outbox[k]; });
+        save(OUT_KEY, outbox);
+        if (Object.keys(outbox).length) scheduleFlush(50);
+      } else {
+        setStatus('offline');
+        scheduleFlush(5000);
+      }
+    });
+  }
+
+  function queue(path, v, ms) {
+    if (!cfg) return;
+    outbox[path] = v;
+    save(OUT_KEY, outbox);
+    scheduleFlush(ms);
+  }
+  function pushSet(date, exId, idx, set) { queue('d/' + date + '/' + exId + '/' + idx, set, 250); }
+  function pushStats(date, src, v) { queue('stats/' + date + '/' + src, v, 1000); }
+  function pushWeight(date, v) { queue('wt/' + date, v, 500); }
+
+  // Rest timer state is short-lived: retry briefly, never queue it for later.
+  function pushRest(r) {
+    if (!cfg) return;
+    pendingRest = r;
+    clearTimeout(restT);
+    (function send(tries) {
+      xhr('PUT', base() + '/rest.json', pendingRest, function (ok) {
+        if (ok || tries <= 0) return;
+        var still = pendingRest && (pendingRest.c || pendingRest.e > Date.now());
+        if (still) restT = setTimeout(function () { send(tries - 1); }, 2000);
+      });
+    }(3));
+  }
+
+  if (typeof window !== 'undefined' && window.addEventListener) {
+    window.addEventListener('online', function () { if (cfg) { connect(); } });
+  }
+
+  return {
+    start: function (handlers) { h = handlers || {}; connect(); },
+    onStatus: function (fn) { statusFns.push(fn); fn(status); return function () { statusFns = statusFns.filter(function (f) { return f !== fn; }); }; },
+    status: function () { return status; },
+    isPaired: function () { return !!cfg; },
+    pairText: pairText, pairFrom: pairFrom, unpair: unpair,
+    pushSet: pushSet, pushRest: pushRest, pushStats: pushStats, pushWeight: pushWeight, flush: flush,
+    config: function () { return cfg ? { url: cfg.url, code: cfg.code } : null; },
+    pending: function () { return Object.keys(outbox).length; },
+    dayKey: dayKey, DAYS_BACK: DAYS_BACK
+  };
+}());
+  </script>
+
+  <!-- Watch sync (FitTracker Watch → this app). Plain JS so it loads before React. -->
+  <script>
+/*
+ * watch-sync.js — receive workouts from FitTracker Watch (Galaxy Watch, Tizen).
+ * Include it with a script tag pointing at watch-sync.js (or paste it inline, as the app does).
+ *
+ *   WatchSync.scanQR(onSession)          open the camera, read the code(s) shown on the watch
+ *   WatchSync.syncBluetooth(onSession)   pull every queued workout over Bluetooth (Chrome only)
+ *
+ * onSession(s) is called once per workout, with:
+ *   { id, date, name, planDay, minutes, xp, avgHr, maxHr, totalSets, volume,
+ *     exercises: [ { id, name, sets: [ { weight|null, reps } ] } ] }
+ * Workouts already imported (same id) are skipped automatically.
+ */
+var WatchSync = (function () {
+  'use strict';
+
+  var SVC  = 'a7f30001-6b2c-4e8d-9f1a-3c5e7b9d0f21';
+  var CTRL = 'a7f30002-6b2c-4e8d-9f1a-3c5e7b9d0f21';
+  var DATA = 'a7f30003-6b2c-4e8d-9f1a-3c5e7b9d0f21';
+  var JSQR_URL = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js';
+  var SEEN_KEY = 'watchSyncIds';
+
+  /* ---------------- shared ---------------- */
+  function seen() { try { return JSON.parse(localStorage.getItem(SEEN_KEY)) || []; } catch (e) { return []; } }
+  function markSeen(id) {
+    var s = seen(); if (s.indexOf(id) === -1) s.push(id);
+    try { localStorage.setItem(SEEN_KEY, JSON.stringify(s.slice(-500))); } catch (e) {}
+  }
+
+  // names: optional { exerciseId: "Display Name" } so v2 sessions (ids only) read nicely
+  var names = {};
+  function setNames(map) { names = map || {}; }
+
+  function unpack(o) {
+    var vol = 0, total = 0;
+    var exercises = (o.e || []).map(function (row) {
+      var sets = row.slice(1).map(function (s) {
+        var set = s.length === 2 ? { weight: s[0], reps: s[1] } : { weight: null, reps: s[0] };
+        if (set.weight) vol += set.weight * set.reps;
+        total++;
+        return set;
+      });
+      var key = row[0];
+      return { id: o.v >= 2 ? key : null, name: names[key] || key, sets: sets };
+    });
+    return { id: o.id, date: new Date(o.id), name: o.n, planDay: o.p != null ? o.p : null,
+             minutes: o.m, xp: o.x, avgHr: o.h || null, maxHr: o.H || null,
+             totalSets: total, volume: vol, exercises: exercises, handoff: !!o.ho };
+  }
+
+  // returns true if delivered, false if it was a duplicate
+  function deliver(obj, onSession) {
+    if (seen().indexOf(obj.id) !== -1) return false;
+    markSeen(obj.id);
+    onSession(unpack(obj));
+    return true;
+  }
+
+  /* ---------------- QR ---------------- */
+  var css = '' +
+    '.ws-ov{position:fixed;inset:0;z-index:99999;background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:"DM Sans",system-ui,sans-serif;color:#eee}' +
+    '.ws-ov video{width:100%;max-width:480px;max-height:70vh;object-fit:cover}' +
+    '.ws-box{position:absolute;width:62vmin;height:62vmin;max-width:300px;max-height:300px;border:3px solid #f0b429;border-radius:18px;box-shadow:0 0 0 100vmax rgba(0,0,0,.45)}' +
+    '.ws-msg{position:absolute;bottom:14vh;left:0;right:0;text-align:center;font-size:17px;padding:0 20px}' +
+    '.ws-dots{display:flex;gap:6px;justify-content:center;margin-top:10px}.ws-dots i{width:10px;height:10px;border-radius:50%;background:#333}.ws-dots i.on{background:#f0b429}' +
+    '.ws-x{position:absolute;top:18px;right:18px;background:#222;color:#eee;border:0;border-radius:22px;padding:10px 18px;font-size:16px}' +
+    '.ws-photo{display:none;flex-direction:column;align-items:center;gap:16px;padding:0 28px;text-align:center}' +
+    '.ws-photo p{font-size:15px;color:#aaa;line-height:1.45;max-width:340px}.ws-photo b{color:#eee}' +
+    '.ws-shoot{background:#f0b429;color:#111;border:0;border-radius:16px;padding:16px 28px;font:800 20px "Barlow Condensed",sans-serif;letter-spacing:1.5px}' +
+    '.ws-ov.photo video,.ws-ov.photo .ws-box{display:none}.ws-ov.photo .ws-photo{display:flex}.ws-ov.photo .ws-msg{position:static;margin-top:18px}';
+
+  function loadScript(src) {
+    return new Promise(function (ok, fail) {
+      var s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = fail;
+      document.head.appendChild(s);
+    });
+  }
+
+  // opts.onPair(text): called with a watch pairing code (FTWPAIR1|…); return true to accept it
+  function scanQR(onSession, opts) {
+    opts = opts || {};
+    return new Promise(function (resolve, reject) {
+      var style = document.createElement('style'); style.textContent = css; document.head.appendChild(style);
+      var ov = document.createElement('div'); ov.className = 'ws-ov';
+      ov.innerHTML = '<video playsinline muted></video><div class="ws-box"></div>' +
+        '<div class="ws-photo"><div style="font-size:44px">⌚📷</div>' +
+          '<p class="ws-why"></p>' +
+          '<button class="ws-shoot">TAKE PHOTO OF CODE</button>' +
+          '<input class="ws-file" type="file" accept="image/*" capture="environment" hidden></div>' +
+        '<div class="ws-msg"><div class="ws-t">' + (opts.title || 'Point at the code on your watch') + '</div><div class="ws-dots"></div></div>' +
+        '<button class="ws-x">Cancel</button>';
+      document.body.appendChild(ov);
+      var video = ov.querySelector('video'), msg = ov.querySelector('.ws-t'), dots = ov.querySelector('.ws-dots');
+      var stream = null, running = true, detector = null, canvas = document.createElement('canvas');
+      var sessions = {};   // id -> { total, parts: [] }
+      var photoMode = false;
+
+      function close(result, err) {
+        running = false;
+        if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
+        ov.remove(); style.remove();
+        err ? reject(err) : resolve(result);
+      }
+      ov.querySelector('.ws-x').onclick = function () { close({ imported: 0, cancelled: true }); };
+
+      function handle(text) {
+        if (/^FTWPAIR1\|/.test(text || '')) {
+          if (opts.onPair && opts.onPair(text)) {
+            if (navigator.vibrate) navigator.vibrate([60, 60, 60]);
+            close({ imported: 0, paired: true });
+          } else msg.textContent = 'That pairing code didn\'t work. Show it again on the watch.';
+          return;
+        }
+        var m = /^FTW1:([0-9a-z]+):(\d+)\/(\d+):([\s\S]*)$/.exec(text || '');
+        if (!m) return;
+        var id = m[1], i = +m[2], n = +m[3];
+        var s = sessions[id] || (sessions[id] = { total: n, parts: [] });
+        if (s.parts[i - 1] == null) { s.parts[i - 1] = m[4]; if (navigator.vibrate) navigator.vibrate(30); }
+        var have = s.parts.filter(function (p) { return p != null; }).length;
+        dots.innerHTML = new Array(n + 1).join('<i></i>');
+        for (var k = 0; k < n; k++) if (s.parts[k] != null) dots.children[k].className = 'on';
+        if (photoMode) {
+          var missing = [];
+          for (var q = 0; q < n; q++) if (s.parts[q] == null) missing.push(q + 1);
+          msg.textContent = have < n ? 'Got ' + have + ' of ' + n + '. Now take a photo of code ' + missing.join(' / ') +
+            ' (turn the bezel on the watch to show it)' : 'Got it';
+        } else {
+          msg.textContent = n > 1 ? 'Got ' + have + ' of ' + n + ' — keep holding steady' : 'Got it';
+        }
+        if (have === n) {
+          try {
+            var obj = JSON.parse(s.parts.join(''));
+            var isNew = deliver(obj, onSession);
+            if (navigator.vibrate) navigator.vibrate([60, 60, 60]);
+            close({ imported: isNew ? 1 : 0, duplicate: !isNew });
+          } catch (e) { s.parts = []; msg.textContent = 'Bad read, trying again…'; }
+        }
+      }
+
+      function frame() {
+        if (!running) return;
+        if (video.readyState < 2) return requestAnimationFrame(frame);
+        if (detector) {
+          detector.detect(video).then(function (codes) {
+            codes.forEach(function (c) { handle(c.rawValue); });
+            if (running) setTimeout(frame, 120);
+          }).catch(function () { if (running) setTimeout(frame, 200); });
+        } else {
+          var w = video.videoWidth, h = video.videoHeight, side = Math.min(w, h), scale = Math.min(1, 720 / side);
+          canvas.width = canvas.height = Math.round(side * scale);
+          var ctx = canvas.getContext('2d', { willReadFrequently: true });
+          ctx.drawImage(video, (w - side) / 2, (h - side) / 2, side, side, 0, 0, canvas.width, canvas.height);
+          var img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          var r = window.jsQR(img.data, img.width, img.height, { inversionAttempts: 'dontInvert' });
+          if (r) handle(r.data);
+          setTimeout(frame, 100);
+        }
+      }
+
+      // Prefer the browser's built-in QR reader (Chrome on Android); fall back to jsQR.
+      var fallback = function () { return window.jsQR ? null : loadScript(JSQR_URL); };
+      var ready = Promise.resolve().then(function () {
+        var BD = window.BarcodeDetector;
+        if (!BD || typeof BD.getSupportedFormats !== 'function') return fallback();
+        return BD.getSupportedFormats().then(function (f) {
+          if (f.indexOf('qr_code') !== -1) detector = new BD({ formats: ['qr_code'] });
+          else return fallback();
+        });
+      }).catch(fallback);
+
+      /* ---- photo fallback: works without live camera access (e.g. a file opened from storage) ---- */
+      function readImage(img) {
+        var max = 1400, sc = Math.min(1, max / Math.max(img.width, img.height));
+        var cw = Math.round(img.width * sc), chh = Math.round(img.height * sc);
+        canvas.width = cw; canvas.height = chh;
+        var ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.drawImage(img, 0, 0, cw, chh);
+        if (detector) {
+          return detector.detect(canvas).then(function (codes) { return codes.map(function (c) { return c.rawValue; }); });
+        }
+        // jsQR: whole photo first, then the centre (where the watch usually is)
+        var tries = [[0, 0, cw, chh], [cw * 0.2, chh * 0.2, cw * 0.6, chh * 0.6], [cw * 0.3, chh * 0.3, cw * 0.4, chh * 0.4]];
+        for (var t = 0; t < tries.length; t++) {
+          var b = tries[t].map(Math.round), d = ctx.getImageData(b[0], b[1], b[2], b[3]);
+          var r = window.jsQR(d.data, d.width, d.height, { inversionAttempts: 'attemptBoth' });
+          if (r) return Promise.resolve([r.data]);
+        }
+        return Promise.resolve([]);
+      }
+      function onPhoto(file) {
+        if (!file) return;
+        msg.textContent = 'Reading photo…';
+        var url = URL.createObjectURL(file), img = new Image();
+        img.onload = function () {
+          readImage(img).then(function (texts) {
+            URL.revokeObjectURL(url);
+            var ok = texts.filter(function (t) { return /^FTW(1:|PAIR1\|)/.test(t); });
+            if (!ok.length) { msg.textContent = "Couldn't find a watch code in that photo. Get closer so the code fills most of the photo, and try again."; return; }
+            ok.forEach(handle);
+          });
+        };
+        img.onerror = function () { msg.textContent = "Couldn't open that photo, try again."; };
+        img.src = url;
+      }
+      function startPhotoMode(why) {
+        photoMode = true; running = false;
+        if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+        ov.classList.add('photo');
+        ov.querySelector('.ws-why').innerHTML = why +
+          '<br><br>Tap below, take a photo of the code on your watch, then tap <b>OK / ✓</b>. ' +
+          'Long workouts show 2–3 codes: take one photo of each.';
+        msg.textContent = '';
+        var input = ov.querySelector('.ws-file');
+        ov.querySelector('.ws-shoot').onclick = function () { input.value = ''; input.click(); };
+        input.onchange = function () { onPhoto(input.files && input.files[0]); };
+      }
+      ov.__photoMode = startPhotoMode;   // for testing
+
+      var canLive = window.isSecureContext !== false && navigator.mediaDevices && navigator.mediaDevices.getUserMedia;
+      if (!canLive) {
+        ready.then(function () {
+          startPhotoMode('Live scanning needs the app to be opened from its web address (https). Opened from a file, the browser blocks it.');
+        }, function () { close(null, new Error('Could not load the QR reader. Check your internet connection.')); });
+        return;
+      }
+
+      ready.then(function () {
+        return navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 1280 } }, audio: false });
+      }).then(function (s) {
+        stream = s; video.srcObject = s; return video.play();
+      }).then(function () {
+        // close-up focus helps with a small watch screen, where supported
+        var track = stream.getVideoTracks()[0], caps = track.getCapabilities ? track.getCapabilities() : {};
+        if (caps.focusMode && caps.focusMode.indexOf('continuous') !== -1) {
+          track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(function () {});
+        }
+        frame();
+      }).catch(function (e) {
+        if (!window.jsQR && !detector) return close(null, new Error('Could not load the QR reader. Check your internet connection.'));
+        startPhotoMode(e && e.name === 'NotAllowedError'
+          ? 'Camera permission is off for this page. (To scan live, allow Camera in Chrome site settings.)'
+          : 'The live camera could not start here.');
+      });
+    });
+  }
+
+  /* ---------------- Bluetooth ---------------- */
+  var enc = new TextEncoder(), dec = new TextDecoder();
+
+  function syncBluetooth(onSession, onStatus) {
+    var status = onStatus || function () {};
+    if (!navigator.bluetooth) {
+      return Promise.reject(new Error('Bluetooth sync needs Chrome on Android (Web Bluetooth).'));
+    }
+    var device, ctrl, data;
+    function cmd(c) { return (ctrl.writeValueWithResponse ? ctrl.writeValueWithResponse(enc.encode(c)) : ctrl.writeValue(enc.encode(c))); }
+    function readBytes() { return data.readValue().then(function (v) { return new Uint8Array(v.buffer, v.byteOffset, v.byteLength); }); }
+    function read() { return readBytes().then(function (b) { return dec.decode(b); }); }
+
+    status('Looking for your watch…');
+    return navigator.bluetooth.requestDevice({ filters: [{ services: [SVC] }] })
+      .then(function (d) { device = d; status('Connecting…'); return d.gatt.connect(); })
+      .then(function (server) { return server.getPrimaryService(SVC); })
+      .then(function (svc) {
+        return Promise.all([svc.getCharacteristic(CTRL), svc.getCharacteristic(DATA)]);
+      })
+      .then(function (ch) {
+        ctrl = ch[0]; data = ch[1];
+        return cmd('INFO').then(read);
+      })
+      .then(function (info) {
+        var p = info.split(','), count = +p[0], bytes = +p[1], chunks = +p[2];
+        if (!count) return { imported: 0, onWatch: 0 };
+        status('Downloading ' + count + ' workout' + (count > 1 ? 's' : '') + '…');
+        var parts = [], got = 0, i = 0;
+        function next() {
+          if (i >= chunks) return Promise.resolve();
+          return cmd('C' + i).then(readBytes).then(function (b) {
+            parts.push(new Uint8Array(b)); got += b.length; i++;
+            status('Downloading… ' + Math.round(i / chunks * 100) + '%');
+            return next();
+          });
+        }
+        return next().then(function () {
+          if (got !== bytes) throw new Error('Transfer incomplete, try again');
+          var all = new Uint8Array(got), o = 0;
+          parts.forEach(function (p) { all.set(p, o); o += p.length; });
+          var text = dec.decode(all);
+          var imported = 0;
+          text.split('\n').forEach(function (line) {
+            if (!line.trim()) return;
+            if (deliver(JSON.parse(line), onSession)) imported++;
+          });
+          // only tell the watch to clear its queue once everything is saved here
+          return cmd('ACK').then(function () { return { imported: imported, onWatch: count }; });
+        });
+      })
+      .then(function (res) {
+        try { device.gatt.disconnect(); } catch (e) {}
+        status(res.imported ? 'Imported ' + res.imported : 'Up to date');
+        return res;
+      })
+      .catch(function (e) {
+        try { if (device) device.gatt.disconnect(); } catch (x) {}
+        if (e && e.name === 'NotFoundError') e = new Error('No watch selected. Open FitTracker on the watch, then try again.');
+        throw e;
+      });
+  }
+
+  return { scanQR: scanQR, syncBluetooth: syncBluetooth, unpack: unpack, setNames: setNames,
+           supportsBluetooth: function () { return !!navigator.bluetooth; } };
+}());
+  </script>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback } = React;
+
+/* ─── FONTS & GLOBAL STYLES ─────────────────────────────────────────────── */
+const GlobalStyle = () => (
+  <style>{`
+    @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800;900&family=DM+Sans:wght@300;400;500;600&display=swap');
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body, #root { background: #07070f; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: #111122; }
+    ::-webkit-scrollbar-thumb { background: #333355; border-radius: 2px; }
+    @keyframes islandIn { from { opacity:0; transform:translateX(-50%) scaleX(0.6) scaleY(0.4); } to { opacity:1; transform:translateX(-50%) scaleX(1) scaleY(1); } }
+    @keyframes fadeUp { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
+    @keyframes pop { 0%{transform:scale(0.5);opacity:0} 60%{transform:scale(1.2)} 100%{transform:scale(1);opacity:1} }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
+    @keyframes burst { 0%{transform:scale(0) rotate(0deg);opacity:1} 100%{transform:scale(1) rotate(720deg);opacity:0} }
+    @keyframes confettiFall { 0%{transform:translateY(-20px) rotate(0deg);opacity:1} 100%{transform:translateY(120vh) rotate(720deg);opacity:0} }
+    @keyframes ringFill { from { stroke-dashoffset: 314; } }
+    @keyframes shimmer { 0%{background-position:-200% 0} 100%{background-position:200% 0} }
+    @keyframes pulseGlow { 0%,100%{box-shadow:0 0 10px rgba(240,180,41,0.3)} 50%{box-shadow:0 0 30px rgba(240,180,41,0.8)} }
+    @keyframes streakBounce { 0%,100%{transform:scale(1)} 50%{transform:scale(1.15)} }
+    @keyframes shine { 0%{background-position:150% 0} 100%{background-position:-50% 0} }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; } }
+    .fade-up { animation: fadeUp 0.4s ease both; }
+    .ring-animate { animation: ringFill 1s ease both; }
+    .pulse-gold { animation: pulseGlow 2s ease-in-out infinite; }
+    .float { animation: float 3s ease-in-out infinite; }
+  `}</style>
+);
+
+/* ─── DATA ───────────────────────────────────────────────────────────────── */
+const WEEKLY_PLAN = {
+  1: { name:"Push Day A", sub:"Chest · Shoulders · Triceps", emoji:"🔴", color:"#ff6b6b", type:"heavy",
+    exercises:[
+      {id:"bench",     name:"Barbell Bench Press",    sets:"4", reps:"6–8",   rest:"3 min"},
+      {id:"inc_db",    name:"Incline DB Press",        sets:"3", reps:"8–12",  rest:"2 min"},
+      {id:"ohp",       name:"Overhead Press (DB)",     sets:"3", reps:"8–10",  rest:"2 min"},
+      {id:"lat_raise", name:"Lateral Raises",          sets:"4", reps:"15–20", rest:"60s"},
+      {id:"cable_fly", name:"Cable Crossover",         sets:"3", reps:"12–15", rest:"60s"},
+      {id:"skulls",    name:"Skull Crushers",          sets:"3", reps:"10–12", rest:"90s"},
+      {id:"pushdown",  name:"Cable Pushdown",          sets:"2", reps:"15–20", rest:"45s"},
+    ]},
+  2: { name:"Pull Day A", sub:"Back · Biceps · Rear Delts", emoji:"🔵", color:"#4fc3f7", type:"heavy",
+    exercises:[
+      {id:"deadlift",  name:"Conventional Deadlift",  sets:"3", reps:"4–6",   rest:"3 min"},
+      {id:"bb_row",    name:"Barbell Row (Overhand)",  sets:"4", reps:"8–10",  rest:"2 min"},
+      {id:"pullups",   name:"Pull-Ups (Weighted)",     sets:"4", reps:"6–10",  rest:"2 min"},
+      {id:"cab_row",   name:"Seated Cable Row",        sets:"3", reps:"12–15", rest:"90s"},
+      {id:"face_pull", name:"Face Pull",               sets:"3", reps:"20",    rest:"60s"},
+      {id:"inc_curl",  name:"Incline DB Curl",         sets:"3", reps:"10–12", rest:"90s"},
+      {id:"hammer",    name:"Hammer Curl",             sets:"2", reps:"12–15", rest:"60s"},
+    ]},
+  3: { name:"Leg Day A", sub:"Quads · Hamstrings · Glutes", emoji:"🟢", color:"#39d98a", type:"heavy",
+    exercises:[
+      {id:"squat",     name:"Barbell Back Squat",      sets:"4", reps:"6–8",   rest:"3 min"},
+      {id:"rdl",       name:"Romanian Deadlift",       sets:"3", reps:"8–10",  rest:"2 min"},
+      {id:"bss",       name:"Bulgarian Split Squat",   sets:"3", reps:"10",    rest:"2 min"},
+      {id:"leg_press", name:"Leg Press",               sets:"3", reps:"12–15", rest:"2 min"},
+      {id:"leg_curl",  name:"Leg Curl (Seated)",       sets:"3", reps:"12–15", rest:"90s"},
+      {id:"hip_thrust",name:"Hip Thrust",              sets:"3", reps:"12–15", rest:"90s"},
+      {id:"calf",      name:"Standing Calf Raise",     sets:"4", reps:"10–12", rest:"90s"},
+    ]},
+  4: { name:"Rest + Mobility", sub:"Active Recovery · Stretch", emoji:"🧘", color:"#888aaa", type:"rest", exercises:[] },
+  5: { name:"Push Day B", sub:"Chest · Shoulders · Triceps", emoji:"🟡", color:"#f0b429", type:"moderate",
+    exercises:[
+      {id:"inc_db2",   name:"Incline DB Bench Press",  sets:"4", reps:"10–12", rest:"90s"},
+      {id:"db_press2", name:"DB Shoulder Press",       sets:"3", reps:"10–12", rest:"90s"},
+      {id:"cab_fly2",  name:"Cable Fly (Mid)",         sets:"3", reps:"15",    rest:"60s"},
+      {id:"mach_chest",name:"Machine Chest Press",     sets:"3", reps:"12–15", rest:"90s"},
+      {id:"lat_cab",   name:"Lateral Raises (Cable)",  sets:"4", reps:"15–20", rest:"45s"},
+      {id:"ot_ext",    name:"Overhead Tricep Ext.",    sets:"3", reps:"12–15", rest:"60s"},
+      {id:"dips",      name:"Dips (Bodyweight)",       sets:"3", reps:"12–15", rest:"90s"},
+    ]},
+  6: { name:"Pull Day B", sub:"Back · Biceps · Rear Delts", emoji:"🟣", color:"#bb8fce", type:"moderate",
+    exercises:[
+      {id:"lat_pull",  name:"Lat Pulldown (Wide)",     sets:"4", reps:"10–12", rest:"90s"},
+      {id:"db_row2",   name:"DB Row (Single Arm)",     sets:"4", reps:"10–12", rest:"90s"},
+      {id:"cab_row2",  name:"Cable Row (Close Grip)",  sets:"3", reps:"12–15", rest:"90s"},
+      {id:"rev_deck",  name:"Reverse Pec Deck",        sets:"3", reps:"15–20", rest:"60s"},
+      {id:"ez_curl",   name:"EZ-Bar Curl",             sets:"3", reps:"8–12",  rest:"90s"},
+      {id:"cab_curl",  name:"Cable Curl",              sets:"3", reps:"12–15", rest:"60s"},
+      {id:"rev_curl",  name:"Reverse Curl",            sets:"2", reps:"15",    rest:"45s"},
+    ]},
+  0: { name:"Full Rest Day", sub:"Sleep · Nutrition · Recovery", emoji:"😴", color:"#555577", type:"rest", exercises:[] },
+};
+
+const MEALS = [
+  {id:"m1", time:"7:00 AM",   emoji:"🍳", name:"Breakfast",         foods:"5 whole eggs + oats + mixed berries + almond butter",              macros:"38P · 65C · 18F · 580kcal"},
+  {id:"m2", time:"10:00 AM",  emoji:"🍌", name:"Pre-Workout",       foods:"Coconut yogurt (unsweetened) + banana + pea protein shake + honey", macros:"40P · 62C · 7F · 470kcal"},
+  {id:"m3", time:"1:00 PM",   emoji:"🍗", name:"Post-Workout",      foods:"Chicken breast + white rice + broccoli + olive oil",               macros:"52P · 80C · 14F · 660kcal"},
+  {id:"m4", time:"4:30 PM",   emoji:"🥩", name:"Afternoon Meal",    foods:"Ground beef (90%) + sweet potato + large salad + avocado",         macros:"42P · 55C · 22F · 590kcal"},
+  {id:"m5", time:"8:00 PM",   emoji:"🌙", name:"Night Protein",     foods:"Pea protein + almond butter + oat milk + frozen banana blended",   macros:"40P · 22C · 14F · 370kcal"},
+];
+
+const SUPPLEMENTS = [
+  {id:"creatine",  emoji:"⚡", name:"Creatine Monohydrate", dose:"5g",            timing:"Morning", color:"#f0b429"},
+  {id:"d3k2",      emoji:"☀️", name:"Vitamin D3 + K2",     dose:"4,000–6,000 IU",timing:"Morning", color:"#ffd700"},
+  {id:"omega3",    emoji:"🐟", name:"Omega-3 Fish Oil",    dose:"3–4g EPA/DHA",  timing:"Lunch",   color:"#4fc3f7"},
+  {id:"pea_rice",  emoji:"🌿", name:"Pea + Rice Protein",  dose:"30–40g",        timing:"Post-WO", color:"#bb8fce"},
+  {id:"magnesium", emoji:"🌙", name:"Magnesium Glycinate", dose:"400mg",         timing:"Bedtime", color:"#4ecdc4"},
+  {id:"zinc",      emoji:"🔩", name:"Zinc",                dose:"25mg",          timing:"Bedtime", color:"#95a5a6"},
+  {id:"caffeine",  emoji:"☕", name:"Caffeine",            dose:"200mg MAX",     timing:"Pre-WO",  color:"#e8956d"},
+];
+
+const MILESTONES = [
+  { lbs: 1,  emoji:"🌱", title:"First Pound!", msg:"Every journey starts with one step." },
+  { lbs: 2,  emoji:"💧", title:"2 lbs Down!",  msg:"The gains are coming. Stay consistent." },
+  { lbs: 5,  emoji:"🔥", title:"5 lb Milestone!", msg:"You're building real momentum now!" },
+  { lbs: 10, emoji:"⚡", title:"HALFWAY THERE!", msg:"10 lbs of pure muscle. You're doing this!" },
+  { lbs: 15, emoji:"💎", title:"15 lbs Gained!", msg:"Elite level. Most people quit before here." },
+  { lbs: 20, emoji:"🏆", title:"GOAL ACHIEVED!", msg:"20 lbs of muscle. You did it. LEGEND." },
+];
+
+/* ─── HELPERS ────────────────────────────────────────────────────────────── */
+// local calendar date (toISOString() is UTC, which rolled evening entries over to the next day)
+const fmt = (d) => getDateKey(d.getFullYear(), d.getMonth(), d.getDate());
+const todayKey = () => fmt(new Date());
+const DOW = (dateStr) => new Date(dateStr + "T12:00:00").getDay();
+const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const DAY_NAMES = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+
+function getDateKey(year, month, day) {
+  return `${year}-${String(month+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+}
+
+/* ─── STORAGE ────────────────────────────────────────────────────────────── */
+function storageGet(key) {
+  try { const v = localStorage.getItem(key); return Promise.resolve(v ? JSON.parse(v) : null); }
+  catch { return Promise.resolve(null); }
+}
+function storageSet(key, val) {
+  try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
+  return Promise.resolve();
+}
+
+
+/* ─── WATCH SYNC ─────────────────────────────────────────────────────────── */
+// Workouts logged on the Galaxy Watch (FitTracker Watch) arrive by QR code or Bluetooth
+// and are merged into logs[date].workouts exactly like sets logged here, so the pyramid,
+// calendar, streak and completion rings all count them.
+
+const PLAN_EX = {};
+Object.values(WEEKLY_PLAN).forEach(p => p.exercises.forEach(e => { PLAN_EX[e.id] = e; }));
+if (window.WatchSync) WatchSync.setNames(Object.fromEntries(Object.values(PLAN_EX).map(e => [e.id, e.name])));
+
+// Watch timestamps use the phone's local date
+const localKey = (ms) => { const d = new Date(ms); return getDateKey(d.getFullYear(), d.getMonth(), d.getDate()); };
+
+function mergeWatchSession(logs, s) {
+  const key = localKey(s.id);
+  const day = {...(logs[key] || {})};
+  day.workouts = {...(day.workouts || {})};
+  let added = 0;
+  s.exercises.forEach(ex => {
+    if (!ex.id) return;
+    const planEx = PLAN_EX[ex.id];
+    const total = planEx ? (parseInt(planEx.sets) || 1) : ex.sets.length;
+    const existing = day.workouts[ex.id + "_sets"] || [];
+    const len = Math.max(total, ex.sets.length);
+    const merged = Array.from({length: len}, (_, i) => {
+      const o = existing[i];
+      const old = !o ? null : (typeof o === "boolean" ? {done: o, lbs: "", reps: ""} : o);
+      const w = ex.sets[i];
+      if (old && old.done && (old.lbs || old.reps)) return old;      // phone entry wins
+      if (!w) return old || {done: false, lbs: "", reps: ""};
+      added++;
+      return {done: true, lbs: w.weight == null ? "" : String(w.weight), reps: String(w.reps)};
+    });
+    day.workouts[ex.id + "_sets"] = merged;
+    day.workouts[ex.id] = merged.slice(0, total).every(x => x.done);
+  });
+  const plan = WEEKLY_PLAN[DOW(key)];
+  const onPlan = s.exercises.some(x => plan.exercises.some(e => e.id === x.id));
+  const allDone = plan.exercises.length > 0 && plan.exercises.every(e => day.workouts[e.id]);
+  return { logs: {...logs, [key]: day}, key, added, onPlan, allDone };
+}
+
+/* ─── LIVE WATCH LINK ────────────────────────────────────────────────────── */
+// Two-way, real-time sync with FitTracker Watch through your Firebase database (FTWLive).
+// Each set is stored per date/exercise/set with a timestamp; the newest edit wins.
+
+const LIVE_META_KEY = "watchLiveMeta";      // last synced value + time for each set
+const normCell = (s) => !s ? {done:false,lbs:"",reps:""} : typeof s === "boolean" ? {done:s,lbs:"",reps:""} : {done:!!s.done, lbs:s.lbs||"", reps:s.reps||""};
+const cellHash = (c) => `${c.done?1:0}|${c.lbs}|${c.reps}`;
+const cellEmpty = (c) => !c.done && !c.lbs && !c.reps;
+const numOrNull = (v) => { const n = parseFloat(v); return isNaN(n) ? null : n; };
+const planColorFor = (exId) => { const p = Object.values(WEEKLY_PLAN).find(p => p.exercises.some(e => e.id === exId)); return p ? p.color : "#f0b429"; };
+
+function writeCell(logs, date, exId, idx, cell) {
+  const day = {...(logs[date] || {})};
+  day.workouts = {...(day.workouts || {})};
+  const planEx = PLAN_EX[exId];
+  const total = planEx ? (parseInt(planEx.sets) || 1) : idx + 1;
+  const old = day.workouts[exId + "_sets"] || [];
+  const arr = Array.from({length: Math.max(total, idx + 1, old.length)}, (_, i) => normCell(old[i]));
+  arr[idx] = cell;
+  day.workouts[exId + "_sets"] = arr;
+  day.workouts[exId] = arr.slice(0, total).every(s => s.done);
+  return {...logs, [date]: day};
+}
+
+function useWatchLive({ logs, setLogs, activeTimer, setActiveTimer }) {
+  const logsRef = useRef(logs);
+  const timerRef = useRef(activeTimer);
+  const metaRef = useRef((() => { try { return JSON.parse(localStorage.getItem(LIVE_META_KEY)) || {}; } catch { return {}; } })());
+  const queue = useRef([]);
+  useEffect(() => { logsRef.current = logs; }, [logs]);
+  useEffect(() => { timerRef.current = activeTimer; }, [activeTimer]);
+  const saveMeta = () => { try { localStorage.setItem(LIVE_META_KEY, JSON.stringify(metaRef.current)); } catch {} };
+
+  // phone → cloud: push every set that changed since it was last synced
+  const pushDiff = useCallback(() => {
+    if (!window.FTWLive || !FTWLive.isPaired()) return;
+    const since = FTWLive.dayKey(Date.now() - FTWLive.DAYS_BACK * 864e5);
+    let changed = false;
+    Object.entries(logsRef.current).forEach(([date, day]) => {
+      if (date < since || !day) return;
+      // body weight (also goes to Samsung Health through the Health bridge app)
+      const wv = day.weight === "" || day.weight == null ? null : Number(day.weight);
+      if (wv != null && !isNaN(wv)) {
+        const k = `wt/${date}`, h = String(wv), m = metaRef.current[k];
+        if (!m || m.h !== h) {
+          const t = Date.now();
+          metaRef.current[k] = {h, t};
+          FTWLive.pushWeight(date, {lb: wv, t, b: "p"});
+          changed = true;
+        }
+      }
+      if (!day.workouts) return;
+      Object.entries(day.workouts).forEach(([key, arr]) => {
+        if (!key.endsWith("_sets") || !Array.isArray(arr)) return;
+        const exId = key.slice(0, -5);
+        arr.forEach((s, i) => {
+          const c = normCell(s), k = `${date}/${exId}/${i}`, h = cellHash(c), m = metaRef.current[k];
+          if ((!m && cellEmpty(c)) || (m && m.h === h)) return;
+          const t = Date.now();
+          metaRef.current[k] = {h, t};
+          FTWLive.pushSet(date, exId, i, {l: numOrNull(c.lbs), r: numOrNull(c.reps), d: c.done, t, b: "p"});
+          changed = true;
+        });
+      });
+    });
+    if (changed) saveMeta();
+  }, []);
+
+  // cloud → phone: apply sets from the watch (newest wins; unsynced phone entries are kept)
+  const applyRemote = useCallback(() => {
+    const items = queue.current.splice(0);
+    if (!items.length) return;
+    let next = logsRef.current, changed = false;
+    items.forEach(({date, exId, idx, cell}) => {
+      const k = `${date}/${exId}/${idx}`, m = metaRef.current[k], t = cell.t || 0;
+      if (m && m.t >= t) return;
+      const local = normCell(((next[date] || {}).workouts || {})[exId + "_sets"]?.[idx]);
+      if (!m && !cellEmpty(local)) return;            // phone has its own unsynced entry: it gets pushed instead
+      const c = {done: !!cell.d, lbs: cell.l == null ? "" : String(cell.l), reps: cell.r == null ? "" : String(cell.r)};
+      metaRef.current[k] = {h: cellHash(c), t};
+      if (cellHash(c) === cellHash(local)) return;
+      next = writeCell(next, date, exId, idx, c);
+      changed = true;
+    });
+    saveMeta();
+    if (changed) { logsRef.current = next; setLogs(next); storageSet("logs", next); }
+  }, [setLogs]);
+
+  // rest timer started / changed / cancelled on the watch
+  // u = the device that made this change (older versions only send b, who started the rest)
+  const onRemoteRest = useCallback((r) => {
+    if (!r) return;
+    const at = timerRef.current;
+    if (r.c) { if (at && at.s === r.s) setActiveTimer(null); return; }
+    if ((r.u || r.b) !== "w") return;                                // our own echo
+    if (at && at.s === r.s) {                                        // the watch changed the running rest
+      const next = r.e > Date.now() ? {...at, endsAt: r.e, total: Math.max(1, Math.round((r.e - r.s) / 1000))} : null;
+      timerRef.current = next; setActiveTimer(next);
+      return;
+    }
+    if (!(r.e > Date.now() + 1000)) return;
+    const ex = PLAN_EX[r.x];
+    if (!ex) return;
+    const next = {exercise: ex, setNum: r.n, totalSets: r.N, color: planColorFor(r.x),
+                  s: r.s, endsAt: r.e, total: Math.max(1, Math.round((r.e - r.s) / 1000)), remote: true};
+    timerRef.current = next; setActiveTimer(next);
+  }, [setActiveTimer]);
+
+  // daily activity from the watch (w) and Samsung Health (hc)
+  const [activity, setActivity] = useState(() => { try { return JSON.parse(localStorage.getItem("watchActivity")) || {}; } catch { return {}; } });
+  const [health, setHealth] = useState(() => { try { return JSON.parse(localStorage.getItem("watchHealth")); } catch { return null; } });
+  const onStats = useCallback((date, src, v) => {
+    setActivity(prev => {
+      const next = {...prev, [date]: {...(prev[date] || {}), [src]: v}};
+      const keep = Object.keys(next).sort().slice(-14);
+      const out = Object.fromEntries(keep.map(k => [k, next[k]]));
+      try { localStorage.setItem("watchActivity", JSON.stringify(out)); } catch {}
+      return out;
+    });
+  }, []);
+  const onHealth = useCallback((v) => {
+    setHealth(v);
+    try { localStorage.setItem("watchHealth", JSON.stringify(v)); } catch {}
+  }, []);
+  // weight from Samsung Health (via the bridge app): newest wins, an unsynced phone entry is kept
+  const onWeight = useCallback((date, v) => {
+    const lb = Number(v.lb), t = v.t || 0;
+    if (!(lb > 0)) return;
+    const k = `wt/${date}`, m = metaRef.current[k];
+    if (m && m.t >= t) return;
+    const cur = (logsRef.current[date] || {}).weight;
+    const hasLocal = cur !== "" && cur != null;
+    if (!m && hasLocal && String(Number(cur)) !== String(lb)) return;
+    metaRef.current[k] = {h: String(lb), t};
+    saveMeta();
+    if (hasLocal && Number(cur) === lb) return;
+    const next = {...logsRef.current, [date]: {...(logsRef.current[date] || {}), weight: lb}};
+    logsRef.current = next; setLogs(next); storageSet("logs", next);
+  }, [setLogs]);
+
+  useEffect(() => {
+    if (!window.FTWLive) return;
+    FTWLive.start({
+      onSet: (date, exId, idx, cell) => queue.current.push({date, exId, idx, cell}),
+      onSync: applyRemote,
+      onRest: onRemoteRest,
+      onStats, onWeight, onHealth,
+    });
+    let first = true;
+    return FTWLive.onStatus(s => { if (s === "live" && first) { first = false; pushDiff(); } });
+  }, []);
+
+  useEffect(() => { const t = setTimeout(pushDiff, 400); return () => clearTimeout(t); }, [logs, pushDiff]);
+
+  // rest timer started / cancelled on the phone
+  const startTimer = useCallback((t) => {
+    const s = Date.now(), total = parseRest(t.exercise.rest);
+    const timer = {...t, s, endsAt: s + total * 1000, total};
+    timerRef.current = timer; setActiveTimer(timer);
+    if (window.FTWLive) FTWLive.pushRest({s, e: timer.endsAt, x: t.exercise.id, n: t.setNum, N: t.totalSets, b: "p", u: "p"});
+  }, [setActiveTimer]);
+  const cancelTimer = useCallback(() => {
+    const at = timerRef.current;
+    timerRef.current = null; setActiveTimer(null);
+    if (at && window.FTWLive) FTWLive.pushRest({s: at.s, e: Date.now(), x: at.exercise.id, n: at.setNum, N: at.totalSets, b: at.remote ? "w" : "p", u: "p", c: true});
+  }, [setActiveTimer]);
+  // ±15s on the phone: same rest (same start), new end, so the watch shows it too
+  const adjustTimer = useCallback((sec) => {
+    const at = timerRef.current;
+    if (!at) return;
+    const e = at.endsAt + sec * 1000;
+    if (e <= Date.now() + 1000) { cancelTimer(); return; }
+    const next = {...at, endsAt: e, total: Math.max(1, Math.round((e - at.s) / 1000))};
+    timerRef.current = next; setActiveTimer(next);
+    if (window.FTWLive) FTWLive.pushRest({s: at.s, e, x: at.exercise.id, n: at.setNum, N: at.totalSets, b: at.remote ? "w" : "p", u: "p"});
+  }, [setActiveTimer, cancelTimer]);
+
+  return { startTimer, cancelTimer, adjustTimer, activity, health };
+}
+
+const agoText = (ms) => {
+  if (!ms) return "never";
+  const m = Math.round((Date.now() - ms) / 60000);
+  return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
+};
+
+// Opens the FitTracker Health bridge app (Android) with this pairing, which syncs and returns here.
+function openHealthBridge(onMissing) {
+  const cfg = window.FTWLive && FTWLive.config();
+  if (!cfg) return;
+  const q = `u=${encodeURIComponent(cfg.url)}&c=${encodeURIComponent(cfg.code)}`;
+  let left = false;
+  const onHide = () => { if (document.hidden) left = true; };
+  document.addEventListener("visibilitychange", onHide);
+  setTimeout(() => { document.removeEventListener("visibilitychange", onHide); if (!left) onMissing(); }, 1800);
+  location.href = `intent://sync?${q}#Intent;scheme=ftwbridge;end`;
+}
+
+/* ─── TODAY'S ACTIVITY (watch sensors + Samsung Health) ─────────────────── */
+function ActivityCard({ activity }) {
+  const today = todayKey();
+  const a = activity[today] || {};
+  const w = a.w || {}, hc = a.hc || {};
+  const steps = Math.max(w.s || 0, hc.s || 0);
+  const stepSrc = steps === 0 ? null : (hc.s || 0) >= (w.s || 0) ? "Samsung Health" : "Galaxy Watch";
+  const hrSrc = [w, hc].filter(x => x.hr).sort((x, y) => (y.t || 0) - (x.t || 0))[0];
+  const lows = [w.hrMin, hc.hrMin].filter(Boolean);
+  const updated = Math.max(w.t || 0, hc.t || 0);
+  const GOAL = 10000, pct = Math.min(100, Math.round(steps / GOAL * 100));
+  const label = {fontFamily: "'DM Sans',sans-serif", fontSize: 10, color: "#555577", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5};
+  const big = {fontFamily: "'Barlow Condensed',sans-serif", fontSize: 26, fontWeight: 800, color: "#fff", lineHeight: 1.05};
+
+  return (
+    <div style={{background: "#111120", borderRadius: 20, padding: "16px 18px", border: "1px solid #1a1a2e"}}>
+      <div style={{display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12}}>
+        <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: "#888aaa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5}}>Today's activity</div>
+        <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: "#555577"}}>{updated ? `updated ${agoText(updated)}` : "waiting for watch…"}</div>
+      </div>
+      <div style={{display: "flex", alignItems: "center", gap: 16}}>
+        <Ring pct={pct} color="#39d98a" size={84} stroke={7}>
+          <span style={{fontSize: 22}}>👟</span>
+        </Ring>
+        <div style={{flex: 1, display: "grid", gridTemplateColumns: "1fr 1fr", rowGap: 12, columnGap: 10}}>
+          <div>
+            <div style={big}><CountUp to={steps} duration={1.2}/></div>
+            <div style={label}>steps · {pct}% of 10k</div>
+          </div>
+          <div>
+            <div style={{...big, color: hrSrc ? "#ff6b6b" : "#444466"}}>{hrSrc ? `♥ ${hrSrc.hr}` : "♥ —"}</div>
+            <div style={label}>{lows.length ? `bpm · low ${Math.min(...lows)}` : "bpm"}</div>
+          </div>
+          {(w.c > 0 || w.k > 0) && <>
+            <div><div style={{...big, fontSize: 20}}>{(w.c || 0).toLocaleString()}</div><div style={label}>kcal (watch)</div></div>
+            <div><div style={{...big, fontSize: 20}}>{w.k || 0}</div><div style={label}>km walked</div></div>
+          </>}
+        </div>
+      </div>
+      {stepSrc && <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: "#444466", marginTop: 10}}>Steps from {stepSrc}</div>}
+    </div>
+  );
+}
+
+function LiveStatus() {
+  const [st, setSt] = useState(window.FTWLive ? FTWLive.status() : "off");
+  useEffect(() => window.FTWLive ? FTWLive.onStatus(setSt) : undefined, []);
+  return st;
+}
+
+function WatchSyncCard({ logs, setLogs, onCelebrate, health }) {
+  const [status, setStatus] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [last, setLast] = useState(() => { try { return localStorage.getItem("watchLastSync"); } catch { return null; } });
+  const logsRef = useRef(logs);
+  useEffect(() => { logsRef.current = logs; }, [logs]);
+  const live = LiveStatus();
+  const paired = !!(window.FTWLive && FTWLive.isPaired()) || live !== "off";
+  const results = useRef([]);
+
+  // called once per workout; saves immediately so nothing is lost mid-sync
+  const onSession = (s) => {
+    const r = mergeWatchSession(logsRef.current, s);
+    logsRef.current = r.logs;
+    setLogs(r.logs);
+    storageSet("logs", r.logs);
+    results.current.push({...r, name: s.name, handoff: s.handoff});
+  };
+
+  const finish = () => {
+    const rs = results.current; results.current = [];
+    const now = new Date().toISOString();
+    try { localStorage.setItem("watchLastSync", now); } catch {}
+    setLast(now);
+    if (!rs.length) return;
+    const d = (k) => { const x = new Date(k + "T12:00:00"); return `${DAY_NAMES[x.getDay()]} ${MONTH_NAMES[x.getMonth()]} ${x.getDate()}`; };
+    const sets = rs.reduce((a, r) => a + r.added, 0);
+    // a mid-workout hand-off from the watch (battery dying): carry on from the Log tab
+    if (rs.some(r => r.handoff)) {
+      const h = rs.find(r => r.handoff);
+      setStatus(`${h.name}: ${sets ? `${sets} new set${sets === 1 ? "" : "s"} from your watch` : "already up to date"}. Finish the rest in the Log tab.`);
+      onCelebrate({ emoji: "🔋", title: "HANDED OFF!", msg: h.allDone ? "Workout complete. Every set made it off your watch." : "Your watch sets are safe. Pick up where you left off." });
+      return;
+    }
+    setStatus(rs.length === 1
+      ? `${rs[0].name} → ${d(rs[0].key)} · ${sets} sets` + (rs[0].onPlan ? "" : " (not that day's plan, still counts for your pyramid)")
+      : `${rs.length} workouts · ${sets} sets imported`);
+    onCelebrate({ emoji: "⌚", title: "WATCH SYNCED!",
+      msg: rs.some(r => r.allDone) ? "Workout complete. Every set logged from your wrist." : `${sets} sets added to your log.` });
+  };
+
+  const pair = async () => {
+    setBusy(true); setStatus("");
+    try {
+      const r = await WatchSync.scanQR(onSession, {
+        title: "Point at the pairing code on your watch",
+        onPair: (text) => FTWLive.pairFrom(text),
+      });
+      if (r.paired) setStatus("Paired! Sets and rest timers now sync both ways.");
+      else if (!r.cancelled) finish();
+    } catch (e) { setStatus(e.message || "Camera error"); }
+    setBusy(false);
+  };
+  const unpair = () => {
+    if (!confirm("Unlink the watch? Your logged workouts stay on both devices.")) return;
+    FTWLive.unpair(); setStatus("Watch unlinked.");
+  };
+  const connectHealth = () => {
+    setStatus("");
+    openHealthBridge(() => setStatus("Couldn't open the FitTracker Health app. Install it on this phone first (see README), then tap again."));
+  };
+  const hcLine = !health ? "Not connected" : health.err ? `Problem: ${health.err}` :
+    `Synced ${agoText(health.t)}${health.n ? ` · ${health.n} workout${health.n === 1 ? "" : "s"} saved` : ""}`;
+
+  const LIVE_TXT = {
+    live:       ["#39d98a", "Live", "Sets and rest timers sync instantly"],
+    connecting: ["#f0b429", "Connecting", "Reaching your sync database…"],
+    offline:    ["#ff6b6b", "Offline", "Changes will sync when you're back online"],
+    error:      ["#ff6b6b", "Error", "Can't reach the sync database. Check its rules (see README)."],
+  };
+
+  const btn = (primary) => ({
+    flex: 1, padding: "12px 8px", borderRadius: 12, cursor: busy ? "default" : "pointer",
+    border: primary ? "none" : "1px solid #2a2a3e", background: primary ? "#f0b429" : "#1a1a2e",
+    color: primary ? "#000" : "#fff", opacity: busy ? 0.5 : 1,
+    fontFamily: "'Barlow Condensed',sans-serif", fontSize: 16, fontWeight: 800, letterSpacing: 1,
+  });
+  const ago = last ? (() => {
+    const m = Math.round((Date.now() - new Date(last)) / 60000);
+    return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
+  })() : "never";
+
+  const lt = LIVE_TXT[live];
+  return (
+    <div style={{background: "#111120", borderRadius: 20, padding: "16px 18px", border: "1px solid #1a1a2e"}}>
+      <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12}}>
+        <div>
+          <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: "#888aaa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5}}>⌚ Galaxy Watch</div>
+          <div style={{fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, fontWeight: 800, color: "#fff"}}>{paired ? "WATCH LINK" : "SYNC WORKOUTS"}</div>
+        </div>
+        {paired && lt ? (
+          <div style={{display: "flex", alignItems: "center", gap: 6, background: `${lt[0]}1a`, border: `1px solid ${lt[0]}55`, borderRadius: 20, padding: "5px 11px"}}>
+            <div style={{width: 8, height: 8, borderRadius: "50%", background: lt[0], boxShadow: `0 0 6px ${lt[0]}`, animation: live === "live" ? "pulseGlow 2s ease-in-out infinite" : "none"}}/>
+            <span style={{fontFamily: "'Barlow Condensed',sans-serif", fontSize: 14, fontWeight: 800, letterSpacing: 1, color: lt[0], textTransform: "uppercase"}}>{lt[1]}</span>
+          </div>
+        ) : (
+          <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: "#555577", textAlign: "right"}}>Last sync<br/>{ago}</div>
+        )}
+      </div>
+
+      {paired ? (
+        <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 12}}>
+          <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: "#888aaa", lineHeight: 1.4}}>{lt ? lt[2] : ""}</div>
+          <button onClick={unpair} style={{background: "none", border: "none", color: "#555577", fontFamily: "'DM Sans',sans-serif", fontSize: 11, cursor: "pointer", whiteSpace: "nowrap", textDecoration: "underline"}}>Unlink</button>
+        </div>
+      ) : (
+        <>
+          <button disabled={busy} onClick={pair} style={{...btn(true), width: "100%", marginBottom: 8}}>🔗 PAIR WATCH FOR LIVE SYNC</button>
+          <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: "#555577", margin: "0 2px 10px", lineHeight: 1.4}}>
+            On the watch: open FitTracker → <b style={{color: "#888aaa"}}>Pair phone</b>, then tap the button above.
+          </div>
+        </>
+      )}
+
+      {paired && (
+        <div style={{display: "flex", alignItems: "center", gap: 12, background: "#16162a", border: "1px solid #22223a", borderRadius: 14, padding: "10px 12px", marginBottom: 14}}>
+          <div style={{fontSize: 22}}>❤️</div>
+          <div style={{flex: 1, minWidth: 0}}>
+            <div style={{fontFamily: "'Barlow Condensed',sans-serif", fontSize: 16, fontWeight: 800, color: "#fff", letterSpacing: 0.5}}>SAMSUNG HEALTH</div>
+            <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: health && health.err ? "#ff6b6b" : "#888aaa", lineHeight: 1.35}}>{hcLine}</div>
+          </div>
+          <button onClick={connectHealth} style={{...btn(!health), flex: "none", padding: "9px 14px", fontSize: 14}}>{health ? "SYNC NOW" : "CONNECT"}</button>
+        </div>
+      )}
+      {status && <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: "#f0b429", marginTop: 10, lineHeight: 1.4}}>{status}</div>}
+    </div>
+  );
+}
+
+/* ─── WATCH IMPORT (Progress tab settings — scan/Bluetooth a finished workout off the watch) ── */
+function WatchImportCard({ logs, setLogs, onCelebrate }) {
+  const [status, setStatus] = useState("");
+  const [busy, setBusy] = useState(false);
+  const logsRef = useRef(logs);
+  useEffect(() => { logsRef.current = logs; }, [logs]);
+  const hasBt = !!(window.WatchSync && WatchSync.supportsBluetooth());
+  const results = useRef([]);
+
+  const onSession = (s) => {
+    const r = mergeWatchSession(logsRef.current, s);
+    logsRef.current = r.logs;
+    setLogs(r.logs);
+    storageSet("logs", r.logs);
+    results.current.push({...r, name: s.name, handoff: s.handoff});
+  };
+
+  const finish = () => {
+    const rs = results.current; results.current = [];
+    if (!rs.length) return;
+    const d = (k) => { const x = new Date(k + "T12:00:00"); return `${DAY_NAMES[x.getDay()]} ${MONTH_NAMES[x.getMonth()]} ${x.getDate()}`; };
+    const sets = rs.reduce((a, r) => a + r.added, 0);
+    if (rs.some(r => r.handoff)) {
+      const h = rs.find(r => r.handoff);
+      setStatus(`${h.name}: ${sets ? `${sets} new set${sets === 1 ? "" : "s"} from your watch` : "already up to date"}. Finish the rest in the Log tab.`);
+      onCelebrate && onCelebrate({ emoji: "🔋", title: "HANDED OFF!", msg: h.allDone ? "Workout complete. Every set made it off your watch." : "Your watch sets are safe. Pick up where you left off." });
+      return;
+    }
+    setStatus(rs.length === 1
+      ? `${rs[0].name} → ${d(rs[0].key)} · ${sets} sets` + (rs[0].onPlan ? "" : " (not that day's plan, still counts for your pyramid)")
+      : `${rs.length} workouts · ${sets} sets imported`);
+    onCelebrate && onCelebrate({ emoji: "⌚", title: "WATCH SYNCED!",
+      msg: rs.some(r => r.allDone) ? "Workout complete. Every set logged from your wrist." : `${sets} sets added to your log.` });
+  };
+
+  const scan = async () => {
+    setBusy(true); setStatus("");
+    try {
+      const r = await WatchSync.scanQR(onSession);
+      if (r.duplicate) setStatus("Already imported that workout");
+      else if (!r.cancelled) finish();
+    } catch (e) { setStatus(e.message || "Camera error"); }
+    setBusy(false);
+  };
+
+  const bluetooth = async () => {
+    setBusy(true); setStatus("");
+    try {
+      const r = await WatchSync.syncBluetooth(onSession, setStatus);
+      if (r.imported) finish(); else { setStatus("Up to date: nothing new on the watch"); finish(); }
+    } catch (e) { setStatus(e.message || "Bluetooth error"); }
+    setBusy(false);
+  };
+
+  const btn = (primary) => ({
+    flex: 1, padding: "12px 8px", borderRadius: 12, cursor: busy ? "default" : "pointer",
+    border: primary ? "none" : "1px solid #2a2a3e", background: primary ? "#f0b429" : "#1a1a2e",
+    color: primary ? "#000" : "#fff", opacity: busy ? 0.5 : 1,
+    fontFamily: "'Barlow Condensed',sans-serif", fontSize: 16, fontWeight: 800, letterSpacing: 1,
+  });
+
+  return (
+    <div style={{background: "#111120", borderRadius: 20, padding: "16px 18px", border: "1px solid #1a1a2e"}}>
+      <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: "#888aaa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5}}>⌚ Galaxy Watch</div>
+      <div style={{fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, fontWeight: 800, color: "#fff", marginBottom: 12}}>IMPORT A FINISHED WORKOUT</div>
+      <div style={{display: "flex", gap: 8}}>
+        <button disabled={busy} onClick={scan} style={btn(false)}>📷 SCAN CODE</button>
+        <button disabled={busy || !hasBt} onClick={bluetooth} style={btn(false)}>{hasBt ? "🔵 BLUETOOTH" : "BLUETOOTH: CHROME ONLY"}</button>
+      </div>
+      {status && <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: "#f0b429", marginTop: 10, lineHeight: 1.4}}>{status}</div>}
+    </div>
+  );
+}
+
+/* ─── CELEBRATION OVERLAY ────────────────────────────────────────────────── */
+function Celebration({ data, onDone }) {
+  const particles = Array.from({length: 40}, (_, i) => ({
+    id: i,
+    left: Math.random() * 100,
+    delay: Math.random() * 1.5,
+    dur: 2 + Math.random() * 2,
+    color: ["#f0b429","#ff6b6b","#39d98a","#4fc3f7","#bb8fce","#ffffff"][i % 6],
+    size: 6 + Math.random() * 10,
+    shape: i % 3,
+  }));
+  useEffect(() => { const t = setTimeout(onDone, 4500); return () => clearTimeout(t); }, []);
+  return (
+    <div style={{position:"fixed",inset:0,zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.75)",backdropFilter:"blur(6px)"}} onClick={onDone}>
+      {particles.map(p => (
+        <div key={p.id} style={{
+          position:"absolute", left:`${p.left}%`, top:"-20px",
+          width:p.size, height:p.size,
+          background: p.shape === 2 ? "transparent" : p.color,
+          border: p.shape === 2 ? `2px solid ${p.color}` : "none",
+          borderRadius: p.shape === 0 ? "50%" : p.shape === 1 ? "2px" : "50%",
+          animation: `confettiFall ${p.dur}s ${p.delay}s ease-in both`,
+        }}/>
+      ))}
+      <div style={{textAlign:"center", animation:"pop 0.5s ease both", zIndex:1}}>
+        <div style={{fontSize:80, marginBottom:16, animation:"float 2s ease-in-out infinite"}}>{data.emoji}</div>
+        <div style={{fontFamily:"'Barlow Condensed',sans-serif", fontSize:48, fontWeight:900, color:"#f0b429", letterSpacing:2, textTransform:"uppercase", filter:"drop-shadow(0 0 24px rgba(240,180,41,0.7))"}}><ShinyText speed={2}>{data.title}</ShinyText></div>
+        <div style={{fontFamily:"'DM Sans',sans-serif", fontSize:18, color:"rgba(255,255,255,0.8)", marginTop:12, maxWidth:320}}>{data.msg}</div>
+        <div style={{marginTop:24, fontSize:13, color:"rgba(255,255,255,0.4)"}}>Tap anywhere to continue</div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── MOTION (React Bits-style components on GSAP) ───────────────────────── */
+const REDUCED_MOTION = !!(window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches);
+const MOTION = !!window.gsap && !REDUCED_MOTION;
+
+// Count Up: tweens from the number on screen to the new one. React never owns the text, so re-renders can't make it jump.
+function CountUp({ to = 0, decimals = 0, duration = 1, prefix = "", suffix = "" }) {
+  const el = useRef(null), shown = useRef(0);
+  const text = (v) => prefix + (decimals ? v.toFixed(decimals) : Math.round(v).toLocaleString()) + suffix;
+  React.useLayoutEffect(() => {
+    if (!MOTION) { shown.current = to; el.current.textContent = text(to); return; }
+    const o = { v: shown.current };
+    el.current.textContent = text(o.v);
+    const t = gsap.to(o, { v: to, duration, ease: "power2.out",
+      onUpdate: () => { shown.current = o.v; if (el.current) el.current.textContent = text(o.v); } });
+    return () => t.kill();
+  }, [to, decimals, prefix, suffix]);
+  return <span ref={el}/>;
+}
+
+// Shiny Text: a light sweep across gradient-clipped text
+function ShinyText({ children, color = "#f0b429", shine = "#fff4cc", speed = 3.5 }) {
+  return (
+    <span style={{
+      backgroundImage: `linear-gradient(110deg, ${color} 40%, ${shine} 50%, ${color} 60%)`,
+      backgroundSize: "200% 100%", WebkitBackgroundClip: "text", backgroundClip: "text",
+      color: "transparent", WebkitTextFillColor: "transparent",
+      animation: `shine ${speed}s linear infinite`,
+    }}>{children}</span>
+  );
+}
+
+// Spotlight Card: a soft glow that follows your finger or pointer
+function SpotlightCard({ children, glow = "rgba(240,180,41,0.18)", style, onClick }) {
+  const ref = useRef(null);
+  const move = (e) => {
+    const r = ref.current.getBoundingClientRect();
+    ref.current.style.setProperty("--mx", `${e.clientX - r.left}px`);
+    ref.current.style.setProperty("--my", `${e.clientY - r.top}px`);
+    ref.current.style.setProperty("--spot", "1");
+  };
+  const leave = () => ref.current.style.setProperty("--spot", "0");
+  return (
+    <div ref={ref} onClick={onClick} onPointerMove={move} onPointerDown={move} onPointerLeave={leave} onPointerCancel={leave}
+      style={{position:"relative", overflow:"hidden", ...style}}>
+      <div style={{position:"absolute", inset:0, pointerEvents:"none", opacity:"var(--spot, 0)", transition:"opacity 0.35s ease",
+        background:`radial-gradient(240px circle at var(--mx, 50%) var(--my, 50%), ${glow}, transparent 70%)`}}/>
+      {children}
+    </div>
+  );
+}
+
+// Animated List: stagger a screen's sections in whenever `key` changes
+function useStaggerIn(ref, key) {
+  React.useLayoutEffect(() => {
+    const root = ref.current && ref.current.firstElementChild;
+    if (!MOTION || !root) return;
+    const t = gsap.from(root.children, { y: 18, opacity: 0, duration: 0.45, ease: "power3.out", stagger: 0.06, clearProps: "transform" });
+    return () => t.revert();
+  }, [key]);
+}
+
+// Flip Panel: collapses to nothing, and flips between two faces. Its height follows the face
+// that's showing, so neither side is ever clipped and there's no dead space.
+function FlipPanel({ open, flipped, front, back }) {
+  const frontRef = useRef(null), backRef = useRef(null);
+  const [h, setH] = useState({ f: 0, b: 0 });
+  React.useLayoutEffect(() => {
+    const measure = () => setH({ f: frontRef.current.offsetHeight, b: backRef.current.offsetHeight });
+    measure();
+    if (!window.ResizeObserver) return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(frontRef.current); ro.observe(backRef.current);
+    return () => ro.disconnect();
+  }, []);
+  const d = REDUCED_MOTION ? 0 : 0.45, flipD = REDUCED_MOTION ? 0 : 0.6, ease = "cubic-bezier(.4,0,.2,1)";
+  // the face turning away stays visible until it's edge-on, then drops out of tab order and taps
+  const face = (on) => ({ position:"absolute", top:0, left:0, right:0, backfaceVisibility:"hidden", WebkitBackfaceVisibility:"hidden",
+    visibility: on ? "visible" : "hidden", transition:`visibility 0s linear ${on ? 0 : flipD / 2}s` });
+  return (
+    <div aria-hidden={!open} style={{ height: open ? (flipped ? h.b : h.f) : 0, overflow:"hidden", perspective:1200,
+      visibility: open ? "visible" : "hidden", transition:`height ${d}s ${ease}, visibility 0s linear ${open ? 0 : d}s` }}>
+      <div style={{ position:"relative", transformStyle:"preserve-3d", transform: flipped ? "rotateY(180deg)" : "none",
+        transition:`transform ${flipD}s ${ease}` }}>
+        <div ref={frontRef} style={face(!flipped)}>{front}</div>
+        <div ref={backRef} style={{ ...face(flipped), transform:"rotateY(180deg)" }}>{back}</div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── PROGRESS RING ──────────────────────────────────────────────────────── */
+function Ring({ pct=0, color="#f0b429", size=80, stroke=7, children }) {
+  const r = (size - stroke*2) / 2;
+  const circ = 2 * Math.PI * r;
+  // start empty and fill on the next frame, so rings sweep in when a screen opens
+  const [ready, setReady] = useState(!MOTION);
+  useEffect(() => { if (ready) return; const id = requestAnimationFrame(() => setReady(true)); return () => cancelAnimationFrame(id); }, []);
+  const dash = circ - ((ready ? pct : 0)/100)*circ;
+  return (
+    <div style={{position:"relative",width:size,height:size,flexShrink:0}}>
+      <svg width={size} height={size} style={{transform:"rotate(-90deg)"}}>
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth={stroke}/>
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={pct>0?color:"transparent"} strokeWidth={stroke}
+          strokeDasharray={circ} strokeDashoffset={dash} strokeLinecap="round"
+          style={{transition:"stroke-dashoffset 0.8s ease"}}/>
+      </svg>
+      <div style={{position:"absolute",inset:0,display:"flex",alignItems:"center",justifyContent:"center"}}>{children}</div>
+    </div>
+  );
+}
+
+/* ─── NAV ────────────────────────────────────────────────────────────────── */
+function Nav({ view, setView }) {
+  const tabs = [
+    {id:"dashboard", icon:"⚡", label:"Today"},
+    {id:"log",       icon:"✅", label:"Log"},
+    {id:"calendar",  icon:"📅", label:"Calendar"},
+    {id:"progress",  icon:"📈", label:"Progress"},
+  ];
+  return (
+    <nav style={{display:"flex",background:"#0e0e1c",borderTop:"1px solid #1a1a2e",position:"sticky",bottom:0,zIndex:50}}>
+      {tabs.map(t => (
+        <button key={t.id} onClick={() => setView(t.id)} style={{
+          flex:1, padding:"12px 4px 10px", display:"flex",flexDirection:"column",alignItems:"center",gap:3,
+          background:"none", border:"none", cursor:"pointer", transition:"all 0.2s",
+          color: view===t.id ? "#f0b429" : "#555577",
+        }}>
+          <span style={{fontSize:20}}>{t.icon}</span>
+          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,fontWeight:600,letterSpacing:0.5,textTransform:"uppercase"}}>{t.label}</span>
+          {view===t.id && <div style={{width:20,height:2,background:"#f0b429",borderRadius:1,marginTop:1}}/>}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+/* ─── DATA: EXPORT / IMPORT / CLEAR ──────────────────────────────────────── */
+const _normCell = (s) => !s ? {done:false,lbs:"",reps:""} : typeof s === "boolean" ? {done:s,lbs:"",reps:""} : {done:!!s.done, lbs:s.lbs ?? "", reps:s.reps ?? ""};
+const _hasData = (c) => c.done || c.lbs !== "" || c.reps !== "";
+function _pickCell(a, b) {
+  const A = _normCell(a), B = _normCell(b);
+  if (A.done && (A.lbs || A.reps)) return A;
+  if (B.done && (B.lbs || B.reps)) return B;
+  if (_hasData(A)) return A;
+  if (_hasData(B)) return B;
+  return A.done ? A : B;
+}
+// Merge an incoming logs object into local logs: union of days, keeping the richest set.
+function mergeLogs(local, inc) {
+  const out = {...local};
+  for (const [date, day] of Object.entries(inc || {})) {
+    const cur = {...(out[date] || {})}; cur.workouts = {...(cur.workouts || {})};
+    const iw = (day && day.workouts) || {};
+    for (const [k, v] of Object.entries(iw)) {
+      if (!k.endsWith("_sets") || !Array.isArray(v)) continue;
+      const ex = cur.workouts[k] || [];
+      const n = Math.max(ex.length, v.length); const merged = [];
+      for (let i = 0; i < n; i++) merged[i] = _pickCell(ex[i], v[i]);
+      cur.workouts[k] = merged;
+    }
+    for (const k of Object.keys(cur.workouts)) {
+      if (k.endsWith("_sets")) {
+        const arr = cur.workouts[k] || [];
+        cur.workouts[k.slice(0, -5)] = arr.length > 0 && arr.every(s => _normCell(s).done);
+      }
+    }
+    if (day && day.meals) cur.meals = {...(day.meals || {}), ...(cur.meals || {})};
+    if (day && day.supplements) cur.supplements = {...(day.supplements || {}), ...(cur.supplements || {})};
+    if (day && day.weight != null && cur.weight == null) cur.weight = day.weight;
+    out[date] = cur;
+  }
+  return out;
+}
+
+// ── CSV import: Date,Exercise,Set,Weight,Reps,Bodyweight → the same shape mergeLogs expects.
+// Exercise matches by id (bench) or display name (Barbell Bench Press), case-insensitive.
+const EXERCISE_LOOKUP = (() => {
+  const m = {};
+  Object.values(WEEKLY_PLAN).forEach(p => p.exercises.forEach(e => {
+    m[e.id.toLowerCase()] = e.id;
+    m[e.name.toLowerCase()] = e.id;
+  }));
+  return m;
+})();
+
+function parseCsvRows(text) {
+  // minimal CSV parser: handles quoted fields with embedded commas/newlines
+  const rows = []; let row = []; let field = ""; let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') { if (text[i+1] === '"') { field += '"'; i++; } else inQuotes = false; }
+      else field += c;
+    } else if (c === '"') inQuotes = true;
+    else if (c === ',') { row.push(field); field = ""; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i+1] === '\n') i++;
+      row.push(field); field = ""; rows.push(row); row = [];
+    } else field += c;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter(r => r.some(c => c.trim() !== ""));
+}
+
+function parseCsvLogs(text) {
+  const rows = parseCsvRows(text);
+  if (!rows.length) throw new Error("empty file");
+  const header = rows[0].map(h => h.trim().toLowerCase());
+  const col = (name) => header.indexOf(name);
+  const cDate = col("date"), cEx = col("exercise"), cSet = col("set"), cW = col("weight"), cR = col("reps"), cBw = col("bodyweight");
+  if (cDate < 0 || cEx < 0) throw new Error('CSV needs at least "Date" and "Exercise" columns');
+
+  const inc = {};
+  let skipped = 0;
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i];
+    const date = (r[cDate] || "").trim();
+    const exRaw = (r[cEx] || "").trim();
+    if (!date || !exRaw) continue;
+    const exId = EXERCISE_LOOKUP[exRaw.toLowerCase()];
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !exId) { skipped++; continue; }
+
+    const day = inc[date] || (inc[date] = { workouts: {} });
+    const key = exId + "_sets";
+    const arr = day.workouts[key] || (day.workouts[key] = []);
+    const setNum = cSet >= 0 ? parseInt(r[cSet], 10) : NaN;
+    const idx = Number.isFinite(setNum) && setNum > 0 ? setNum - 1 : arr.length;
+    const lbsVal = cW >= 0 ? (r[cW] || "").trim() : "";
+    const repsVal = cR >= 0 ? (r[cR] || "").trim() : "";
+    arr[idx] = { done: true, lbs: lbsVal, reps: repsVal };
+
+    const bw = cBw >= 0 ? (r[cBw] || "").trim() : "";
+    if (bw && !isNaN(parseFloat(bw))) day.weight = parseFloat(bw);
+  }
+  // fill any sparse gaps (e.g. Set numbers skipped) so arrays aren't holey
+  Object.values(inc).forEach(day => Object.keys(day.workouts).forEach(k => {
+    day.workouts[k] = Array.from(day.workouts[k], (c) => c || { done: false, lbs: "", reps: "" });
+  }));
+  return { inc, days: Object.keys(inc).length, skipped };
+}
+
+function DataCard({ logs, setLogs, onCelebrate }) {
+  const fileRef = useRef(null);
+  const [msg, setMsg] = useState("");
+  const [adv, setAdv] = useState(false);
+  const dayCount = Object.keys(logs).length;
+
+  const doExport = () => {
+    let profile = null; try { profile = JSON.parse(localStorage.getItem("profile")); } catch {}
+    const payload = { v: 1, app: "fittracker", exportedAt: new Date().toISOString(), logs, profile };
+    const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `fittracker-backup-${todayKey()}.json`;
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    setMsg(`Exported ${dayCount} day${dayCount === 1 ? "" : "s"}.`);
+  };
+
+  const onFile = async (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    try {
+      const text = await f.text();
+      const isCsv = /\.csv$/i.test(f.name) || (!/\.json$/i.test(f.name) && text.trim()[0] !== "{");
+      let inc, added, skipped = 0;
+      if (isCsv) {
+        const r = parseCsvLogs(text);
+        inc = r.inc; added = r.days; skipped = r.skipped;
+      } else {
+        const data = JSON.parse(text);
+        inc = data && data.logs ? data.logs : data;
+        if (!inc || typeof inc !== "object" || Array.isArray(inc)) throw new Error("not a FitTracker backup");
+        added = Object.keys(inc).length;
+      }
+      const merged = mergeLogs(logs, inc);
+      setLogs(merged); await storageSet("logs", merged);
+      setMsg(`Imported ${added} day${added === 1 ? "" : "s"}.` + (skipped ? ` (${skipped} row${skipped === 1 ? "" : "s"} skipped — check date format / exercise name)` : ""));
+      onCelebrate && onCelebrate({ emoji: "📥", title: "WORKOUTS IMPORTED!", msg: `${added} days merged into your log.` });
+    } catch (err) {
+      setMsg("Couldn't read that file: " + (err.message || err));
+    }
+    e.target.value = "";
+  };
+
+  const clearAll = () => {
+    const typed = prompt("This permanently deletes ALL workout data on this phone and can't be undone.\n\nExport a backup first if you're unsure.\n\nType CLEAR to confirm:");
+    if ((typed || "").trim().toUpperCase() !== "CLEAR") { setMsg("Clear cancelled."); return; }
+    setLogs({}); storageSet("logs", {});
+    setMsg("All workout data cleared.");
+  };
+
+  const btn = (bg, fg) => ({
+    flex: 1, padding: "11px 8px", borderRadius: 12, border: "1px solid #2a2a3e", cursor: "pointer",
+    background: bg, color: fg, fontFamily: "'Barlow Condensed',sans-serif", fontSize: 15, fontWeight: 800, letterSpacing: 1,
+  });
+
+  return (
+    <div style={{ background: "#111120", borderRadius: 20, padding: "16px 18px", border: "1px solid #1a1a2e" }}>
+      <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: "#888aaa", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Data</div>
+      <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, fontWeight: 800, color: "#fff", marginBottom: 4 }}>BACKUP & RESTORE</div>
+      <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: "#888aaa", marginBottom: 12 }}>{dayCount} day{dayCount === 1 ? "" : "s"} logged on this phone</div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+        <button onClick={doExport} style={btn("#1a1a2e", "#fff")}>⬇ EXPORT</button>
+        <button onClick={() => fileRef.current && fileRef.current.click()} style={btn("#f0b429", "#000")}>⬆ IMPORT</button>
+      </div>
+      <input ref={fileRef} type="file" accept="application/json,.json,.csv,text/csv" onChange={onFile} style={{ display: "none" }} />
+      {msg && <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: "#f0b429", marginTop: 10, lineHeight: 1.4 }}>{msg}</div>}
+      <div onClick={() => setAdv(a => !a)} style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: "#444466", marginTop: 14, cursor: "pointer", userSelect: "none" }}>
+        {adv ? "▾" : "▸"} Advanced
+      </div>
+      {adv && (
+        <div style={{ marginTop: 10, padding: "12px 14px", background: "#16101a", border: "1px solid #3a2030", borderRadius: 14 }}>
+          <div style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: "#888aaa", lineHeight: 1.45, marginBottom: 10 }}>
+            Danger zone. Clearing wipes every logged workout on this phone and can't be undone — export a backup first.
+          </div>
+          <button onClick={clearAll} style={{ ...btn("#1a1a2e", "#ff6b6b"), width: "100%", borderColor: "#3a2030" }}>🗑 CLEAR ALL DATA</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── DASHBOARD ──────────────────────────────────────────────────────────── */
+function Dashboard({ logs, profile, setView, setSelectedDate, setLogs, onCelebrate, activity, health }) {
+  const today = todayKey();
+  const log = logs[today] || {};
+  const dow = DOW(today);
+  const plan = WEEKLY_PLAN[dow];
+  const date = new Date(today + "T12:00:00");
+  const dateLabel = `${DAY_NAMES[date.getDay()]}, ${MONTH_NAMES[date.getMonth()]} ${date.getDate()}`;
+
+  const totalEx = plan.exercises.length;
+  const doneEx = plan.exercises.filter(e => (log.workouts||{})[e.id]).length;
+  const doneMeals = MEALS.filter(m => (log.meals||{})[m.id]).length;
+  const doneSupps = SUPPLEMENTS.filter(s => (log.supplements||{})[s.id]).length;
+  const wPct = totalEx > 0 ? Math.round(doneEx/totalEx*100) : null;
+  const mPct = Math.round(doneMeals/MEALS.length*100);
+  const sPct = Math.round(doneSupps/SUPPLEMENTS.length*100);
+
+  // Streak calc
+  let streak = 0;
+  let d = new Date(); d.setDate(d.getDate()-1);
+  while(true) {
+    const k = fmt(d);
+    const l = logs[k];
+    if(!l) break;
+    const wDow = DOW(k), wp = WEEKLY_PLAN[wDow];
+    const hasActivity = wp.type!=="rest" ? Object.values(l.workouts||{}).some(Boolean) : Object.values(l.meals||{}).some(Boolean);
+    if(!hasActivity) break;
+    streak++; d.setDate(d.getDate()-1);
+    if(streak>365) break;
+  }
+
+  const gained = profile.currentWeight ? Math.max(0, profile.currentWeight - profile.startWeight) : 0;
+  const gainPct = Math.min(100, Math.round(gained/20*100));
+
+  const quickLog = () => { setSelectedDate(today); setView("log"); };
+
+  return (
+    <div style={{padding:"20px 16px", display:"flex",flexDirection:"column",gap:20, animation:MOTION?"none":"fadeUp 0.4s ease both"}}>
+      {/* Header */}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+        <div>
+          <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:13,color:"#888aaa",fontWeight:500}}>{dateLabel}</div>
+          <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:36,fontWeight:900,color:"#ffffff",letterSpacing:1,lineHeight:1.1}}>YOUR GAINS<br/><ShinyText>DASHBOARD</ShinyText></div>
+        </div>
+        {streak > 0 && (
+          <div style={{textAlign:"center",animation:"streakBounce 2s ease-in-out infinite"}}>
+            <div style={{fontSize:32}}>🔥</div>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:22,fontWeight:800,color:"#ff6b6b"}}><CountUp to={streak}/></div>
+            <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:"#888aaa"}}>DAY STREAK</div>
+          </div>
+        )}
+      </div>
+
+      {/* Today's workout card */}
+      <SpotlightCard onClick={quickLog} glow={`${plan.color}33`} style={{background:`linear-gradient(135deg, ${plan.color}22, ${plan.color}08)`,border:`1px solid ${plan.color}44`,borderRadius:20,padding:"18px 20px",cursor:"pointer"}}>
+        <div style={{position:"absolute",right:-10,top:-10,fontSize:80,opacity:0.08}}>{plan.emoji}</div>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div>
+            <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:plan.color,fontWeight:600,textTransform:"uppercase",letterSpacing:1}}>TODAY'S WORKOUT</div>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:800,color:"#fff",marginTop:2}}>{plan.name}</div>
+            <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:13,color:"rgba(255,255,255,0.5)",marginTop:2}}>{plan.sub}</div>
+          </div>
+          {wPct !== null ? (
+            <Ring pct={wPct} color={plan.color} size={72} stroke={6}>
+              <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:18,fontWeight:800,color:"#fff"}}><CountUp to={wPct} suffix="%"/></span>
+            </Ring>
+          ) : (
+            <div style={{fontSize:40}}>{plan.emoji}</div>
+          )}
+        </div>
+        {totalEx > 0 && (
+          <div style={{marginTop:14,display:"flex",gap:6,flexWrap:"wrap"}}>
+            {plan.exercises.map(ex => (
+              <div key={ex.id} style={{
+                width:28,height:28,borderRadius:8,fontSize:11,
+                display:"flex",alignItems:"center",justifyContent:"center",
+                background:(log.workouts||{})[ex.id] ? plan.color : "rgba(255,255,255,0.07)",
+                color:(log.workouts||{})[ex.id] ? "#000" : "rgba(255,255,255,0.3)",
+                fontWeight:700, transition:"all 0.2s",
+              }}>✓</div>
+            ))}
+          </div>
+        )}
+      </SpotlightCard>
+
+      {/* Watch sync */}
+      {window.FTWLive && FTWLive.isPaired() && <ActivityCard activity={activity}/>}
+      <WatchSyncCard logs={logs} setLogs={setLogs} onCelebrate={onCelebrate} health={health}/>
+
+      {/* Macro rings row */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
+        {[
+          {label:"Workouts", pct: wPct??0, color:"#ff6b6b", val:`${doneEx}/${totalEx}`, icon:"💪"},
+          {label:"Meals",    pct: mPct,    color:"#39d98a", val:`${doneMeals}/${MEALS.length}`, icon:"🍽️"},
+          {label:"Supps",    pct: sPct,    color:"#4fc3f7", val:`${doneSupps}/${SUPPLEMENTS.length}`, icon:"💊"},
+        ].map(item => (
+          <div key={item.label} onClick={quickLog} style={{background:"#111120",borderRadius:16,padding:"16px 12px",display:"flex",flexDirection:"column",alignItems:"center",gap:8,cursor:"pointer",border:"1px solid #1a1a2e"}}>
+            <Ring pct={item.pct} color={item.color} size={60} stroke={5}>
+              <span style={{fontSize:16}}>{item.icon}</span>
+            </Ring>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:800,color:item.pct===100?"#39d98a":"#fff"}}>{item.val}</div>
+            <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:"#555577",fontWeight:600,textTransform:"uppercase",letterSpacing:0.5}}>{item.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Muscle gain progress */}
+      <div style={{background:"#111120",borderRadius:20,padding:20,border:"1px solid #1a1a2e"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+          <div>
+            <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:"#888aaa",fontWeight:600,textTransform:"uppercase",letterSpacing:0.5}}>MUSCLE GAIN GOAL</div>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:26,fontWeight:800,color:"#fff"}}>
+              {gained > 0 ? <><span style={{color:"#f0b429"}}><CountUp to={gained} decimals={1} prefix="+" suffix=" lbs"/></span> gained</> : "Start logging weight →"}
+            </div>
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:18,fontWeight:700,color:"#39d98a"}}>{gainPct}%</div>
+            <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:"#555577"}}>of goal</div>
+          </div>
+        </div>
+        <div style={{height:10,background:"rgba(255,255,255,0.06)",borderRadius:5,overflow:"hidden"}}>
+          <div style={{height:"100%",width:`${gainPct}%`,background:"linear-gradient(90deg,#f0b429,#ff6b6b)",borderRadius:5,transition:"width 1s ease"}}/>
+        </div>
+        <div style={{display:"flex",justifyContent:"space-between",marginTop:6}}>
+          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:"#555577"}}>{profile.startWeight} lbs</span>
+          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:"#555577"}}>Goal: {profile.startWeight+20} lbs</span>
+        </div>
+      </div>
+
+      {/* Weight entry shortcut */}
+      <div onClick={quickLog} style={{background:"linear-gradient(135deg,#1a1a2e,#111120)",borderRadius:16,padding:"14px 18px",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",border:"1px solid #2a2a3e"}}>
+        <div>
+          <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:"#888aaa"}}>Today's weight</div>
+          <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:24,fontWeight:800,color:"#fff"}}>{log.weight ? `${log.weight} lbs` : "— Not logged yet"}</div>
+        </div>
+        <div style={{fontSize:28}}>⚖️</div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── REST TIMER HELPERS ─────────────────────────────────────────────────── */
+function parseRest(str) {
+  if(!str) return 60;
+  const minMatch = str.match(/(\d+)\s*min/);
+  if(minMatch) return parseInt(minMatch[1]) * 60;
+  const secMatch = str.match(/(\d+)\s*s/);
+  if(secMatch) return parseInt(secMatch[1]);
+  return 60;
+}
+
+function TimerIsland({ timer, onStop, onCancel, onAdjust }) {
+  // timer = { exercise, setNum, totalSets, color, s, endsAt, total }  (s/endsAt: shared with the watch)
+  // Time left always comes from the shared end time, rounded up like the watch, so both read the same
+  // second, and it can't drift when the phone throttles timers (locked screen, background tab).
+  const total      = timer.total || parseRest(timer.exercise.rest);
+  const endsAt     = timer.endsAt || (timer.s || Date.now()) + total * 1000;
+  const left       = () => Math.max(0, Math.ceil((endsAt - Date.now()) / 1000));
+  const [remaining, setRemaining] = useState(left);
+  const [done,      setDone]      = useState(false);
+  const [expanded,  setExpanded]  = useState(false);
+  const live = LiveStatus();
+  const linked = live === "live";
+
+  useEffect(() => {
+    setDone(false);
+    let id = null, endT = null;
+    const tick = () => {
+      const r = left();
+      setRemaining(r);
+      if (r > 0 || endT) return;
+      clearInterval(id);
+      setDone(true);
+      try { navigator.vibrate && navigator.vibrate([300, 150, 300]); } catch {}
+      endT = setTimeout(onStop, 1000);
+    };
+    tick();
+    if (!endT) id = setInterval(tick, 250);
+    document.addEventListener("visibilitychange", tick);
+    return () => { clearInterval(id); clearTimeout(endT); document.removeEventListener("visibilitychange", tick); };
+  }, [endsAt, timer.s, onStop]);
+
+  const pct      = Math.max(0, remaining / total);
+  const mins     = Math.floor(remaining / 60);
+  const secs     = remaining % 60;
+  const timeStr  = mins > 0 ? `${mins}:${String(secs).padStart(2,"0")}` : `${remaining}`;
+  const col      = done ? "#39d98a" : remaining <= 5 ? "#ff6b6b" : remaining <= 15 ? "#f0b429" : timer.color;
+  const urgent   = remaining <= 5 && !done;
+
+  // Arc for the pill outline
+  const W = expanded ? 320 : (linked ? 240 : 220), H = expanded ? 52 : 36, R = H / 2;
+  const arc = `M ${R},0 H ${W - R} A ${R},${R} 0 0 1 ${W},${R} A ${R},${R} 0 0 1 ${W - R},${H} H ${R} A ${R},${R} 0 0 1 0,${R} A ${R},${R} 0 0 1 ${R},0 Z`;
+  const perim = 2 * Math.PI * R + 2 * (W - 2 * R);
+
+  return (
+    <div style={{
+      position:"fixed", top:10, left:"50%",
+      transform:"translateX(-50%)",
+      zIndex:500,
+      animation:"islandIn 0.35s cubic-bezier(0.34,1.56,0.64,1) both",
+      cursor:"pointer",
+    }} onClick={() => setExpanded(e => !e)}>
+
+      {/* Pill shell */}
+      <div style={{
+        position:"relative",
+        width:W, height:H,
+        background:"#08080f",
+        borderRadius:R,
+        display:"flex", alignItems:"center",
+        padding: expanded ? "0 14px" : "0 10px",
+        gap: expanded ? 10 : 7,
+        boxShadow:`0 4px 24px rgba(0,0,0,0.7), 0 0 0 1px ${col}33`,
+        transition:"width 0.3s cubic-bezier(0.34,1.56,0.64,1), height 0.3s cubic-bezier(0.34,1.56,0.64,1), padding 0.3s ease",
+        overflow:"hidden",
+      }}>
+
+        {/* SVG draining outline */}
+        <svg style={{position:"absolute",inset:0,pointerEvents:"none"}} width={W} height={H}>
+          <path d={arc} fill="none" stroke={`${col}22`} strokeWidth="1.5"/>
+          <path d={arc} fill="none" stroke={col} strokeWidth="1.5"
+            strokeDasharray={perim}
+            strokeDashoffset={perim * pct}
+            strokeLinecap="round"
+            style={{transition:"stroke-dashoffset 1s linear, stroke 0.4s ease"}}
+          />
+        </svg>
+
+        {/* Tiny color dot */}
+        <div style={{
+          width: done ? 10 : urgent ? 10 : 8,
+          height: done ? 10 : urgent ? 10 : 8,
+          borderRadius:"50%",
+          background: col,
+          flexShrink:0,
+          transition:"all 0.3s",
+          animation: urgent ? "streakBounce 0.4s ease-in-out infinite" : done ? "pop 0.4s ease" : "none",
+          boxShadow: `0 0 ${urgent ? 8 : 4}px ${col}`,
+        }}/>
+
+        {/* Set badge */}
+        <div style={{
+          fontFamily:"'Barlow Condensed',sans-serif",
+          fontSize: expanded ? 13 : 11,
+          fontWeight:800, color:col, letterSpacing:0.3,
+          flexShrink:0, transition:"font-size 0.2s",
+        }}>
+          {done ? "DONE" : `S${timer.setNum}/${timer.totalSets}`}
+        </div>
+
+        {/* Separator */}
+        <div style={{width:1,height:14,background:"rgba(255,255,255,0.1)",flexShrink:0}}/>
+
+        {/* Countdown */}
+        <div style={{
+          fontFamily:"'Barlow Condensed',sans-serif",
+          fontSize: expanded ? 22 : 17,
+          fontWeight:900, color:"#fff", letterSpacing:-0.5,
+          lineHeight:1, flexShrink:0,
+          transition:"font-size 0.2s",
+          animation: urgent ? "streakBounce 0.4s ease-in-out infinite" : "none",
+        }}>{done ? "✅" : timeStr}</div>
+
+        {/* same countdown is on the watch right now */}
+        {linked && !done && (
+          <div title="Synced with your watch" style={{fontSize:11,color:"#39d98a",flexShrink:0,display:"flex",alignItems:"center",gap:2,fontFamily:"'Barlow Condensed',sans-serif",fontWeight:800,letterSpacing:0.5}}>
+            ⌚{!expanded && <span>SYNCED</span>}
+          </div>
+        )}
+
+        {/* Exercise name — only when expanded */}
+        {expanded && (
+          <div style={{
+            fontFamily:"'DM Sans',sans-serif", fontSize:11, color:"rgba(255,255,255,0.45)",
+            overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", flex:1,
+            animation:"fadeUp 0.2s ease",
+          }}>{timer.exercise.name}</div>
+        )}
+
+        {/* Expanded controls */}
+        {expanded && (
+          <div style={{display:"flex",gap:5,flexShrink:0,animation:"fadeUp 0.2s ease"}}>
+            {/* ±15s instead of pause: a pause can't be shared, a new end time can */}
+            {[-15, 15].map(d => (
+              <button key={d} aria-label={`${d > 0 ? "Add" : "Remove"} 15 seconds`} onClick={e=>{e.stopPropagation();onAdjust && onAdjust(d);}} style={{
+                padding:"3px 7px",borderRadius:6,border:"none",cursor:"pointer",
+                background:"rgba(255,255,255,0.08)", color:"#888aaa",
+                fontFamily:"'Barlow Condensed',sans-serif",fontSize:12,fontWeight:800,
+              }}>{d > 0 ? "+15" : "−15"}</button>
+            ))}
+            <button onClick={e=>{e.stopPropagation();(onCancel||onStop)();}} style={{
+              padding:"3px 8px",borderRadius:6,border:"none",cursor:"pointer",
+              background:"rgba(255,255,255,0.05)",color:"#555577",
+              fontFamily:"'Barlow Condensed',sans-serif",fontSize:12,fontWeight:800,
+            }}>✕</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ─── LOCAL PYRAMID CALCULATOR ───────────────────────────────────────────── */
+// Determines warm-up → working weight pyramid from last session data, no backend needed
+function calcPyramid(numSets, lastSessionSets) {
+  // Find the heaviest logged weight from the last session
+  const logged = (lastSessionSets || []).map(s => parseFloat(s.lbs)).filter(n => !isNaN(n) && n > 0);
+  const topWeight = logged.length ? Math.max(...logged) : null;
+
+  if(!topWeight) return null; // no prior data → no suggestion yet
+
+  // Build pyramid: sets go from ~60% up to ~100% of last top weight, in 5 lb increments
+  const pcts = numSets === 2 ? [0.75, 1.0]
+             : numSets === 3 ? [0.65, 0.82, 1.0]
+             : numSets === 4 ? [0.60, 0.75, 0.88, 1.0]
+             : numSets === 5 ? [0.55, 0.68, 0.80, 0.92, 1.0]
+             : Array.from({length:numSets},(_,i)=> 0.55 + (0.45/(numSets-1))*i);
+
+  const notes = ["warm-up","build","working weight","push hard","max effort"];
+  return pcts.map((p, i) => {
+    const raw   = topWeight * p;
+    const lbs   = Math.round(raw / 5) * 5; // round to nearest 5 lbs
+    const note  = notes[Math.min(i, notes.length-1)];
+    return { set: i+1, lbs, note };
+  });
+}
+
+function PyramidSuggestion({ exercise, numSets, lastSessionSets, planColor, alwaysOpen }) {
+  const [open, setOpen] = useState(!!alwaysOpen);
+  const weights = calcPyramid(numSets, lastSessionSets);
+
+  // No prior data at all
+  if(!weights) return (
+    <div style={{
+      display:"flex",alignItems:"center",gap:6,
+      margin:"0 14px 8px",padding:"6px 12px",
+      background:"rgba(255,255,255,0.03)",borderRadius:10,
+    }}>
+      <span style={{fontSize:12}}>📊</span>
+      <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:"#444466"}}>
+        Log weights below — pyramid suggestions appear next session
+      </span>
+    </div>
+  );
+
+  if(!open) return (
+    <button onClick={()=>setOpen(true)} style={{
+      display:"flex",alignItems:"center",gap:6,
+      margin:"0 14px 8px",
+      padding:"6px 12px",
+      background:`${planColor}14`,
+      border:`1px solid ${planColor}33`,
+      borderRadius:10, cursor:"pointer", width:"calc(100% - 28px)",
+      justifyContent:"center",
+    }}>
+      <span style={{fontSize:13}}>📊</span>
+      <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,fontWeight:600,color:planColor}}>
+        Show Pyramid Suggestion
+      </span>
+    </button>
+  );
+
+  return (
+    <div style={{margin:"0 14px 8px",background:`${planColor}0d`,border:`1px solid ${planColor}33`,borderRadius:12,overflow:"hidden"}}>
+      <div style={{display:"flex",alignItems:"center",gap:6,padding:"7px 12px",borderBottom:`1px solid ${planColor}18`}}>
+        <span style={{fontSize:12}}>📊</span>
+        <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,fontWeight:600,color:planColor}}>Pyramid · Based on last session</span>
+        {!alwaysOpen && <button onClick={()=>setOpen(false)} style={{marginLeft:"auto",background:"none",border:"none",color:"#333355",cursor:"pointer",fontSize:13,padding:"2px 4px"}}>✕</button>}
+      </div>
+      <div style={{display:"flex",padding:"8px 12px 10px",gap:6,flexWrap:"wrap"}}>
+        {weights.map(w => (
+          <div key={w.set} style={{
+            display:"flex",flexDirection:"column",alignItems:"center",
+            background:"rgba(255,255,255,0.05)",borderRadius:10,
+            padding:"8px 10px",minWidth:54,
+          }}>
+            <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:9,color:"#555577",fontWeight:600,textTransform:"uppercase"}}>Set {w.set}</span>
+            <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:900,color:"#fff",lineHeight:1.1}}>{w.lbs}</span>
+            <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:9,color:"#555577"}}>lbs</span>
+            <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:9,color:planColor,marginTop:3,textAlign:"center",lineHeight:1.3}}>{w.note}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ─── DAILY LOG ──────────────────────────────────────────────────────────── */
+function DailyLog({ selectedDate, logs, setLogs, onCelebrate, profile, activeTimer, onStartTimer, onStopTimer }) {
+  const log = logs[selectedDate] || {};
+  const dow = DOW(selectedDate);
+  const plan = WEEKLY_PLAN[dow];
+  const date = new Date(selectedDate + "T12:00:00");
+  const dateLabel = `${DAY_NAMES[date.getDay()]}, ${MONTH_NAMES[date.getMonth()]} ${date.getDate()} ${date.getFullYear()}`;
+  const [weightInput, setWeightInput] = useState(log.weight||"");
+  const [tab, setTab] = useState("workout");
+  const prevRef = useRef({});
+
+  // Parse numeric set count from string like "4", "3"
+  const numSets = useCallback((ex) => parseInt(ex.sets) || 1, []);
+
+  // Returns array of {done, lbs, reps} for each set
+  const getSetsData = useCallback((exId, total) => {
+    const raw = (log.workouts||{})[exId + "_sets"] || [];
+    return Array.from({length: total}, (_, i) => {
+      const s = raw[i];
+      if(!s) return {done:false, lbs:"", reps:""};
+      if(typeof s === "boolean") return {done:s, lbs:"", reps:""};
+      return {done:!!s.done, lbs:s.lbs||"", reps:s.reps||""};
+    });
+  }, [log]);
+
+  // Backward-compat shim used by completion checks
+  const setsDoneFor = useCallback((exId, total) => {
+    return getSetsData(exId, total).map(s => s.done);
+  }, [getSetsData]);
+
+  // Find last logged session for an exercise across all dates before today
+  const getLastSession = useCallback((exId, total) => {
+    const sorted = Object.keys(logs)
+      .filter(k => k < selectedDate && logs[k]?.workouts?.[exId+"_sets"])
+      .sort((a,b) => b.localeCompare(a));
+    if(!sorted.length) return null;
+    const raw = logs[sorted[0]].workouts[exId+"_sets"] || [];
+    return Array.from({length:total},(_,i)=>{
+      const s = raw[i];
+      if(!s) return {done:false,lbs:"",reps:""};
+      if(typeof s==="boolean") return {done:s,lbs:"",reps:""};
+      return {done:!!s.done,lbs:s.lbs||"",reps:s.reps||""};
+    });
+  }, [logs, selectedDate]);
+
+  const updateSet = useCallback(async (ex, setIdx, field, value) => {
+    const total = numSets(ex);
+    const newLogs = {...logs};
+    const day = {...(newLogs[selectedDate]||{})};
+    day.workouts = {...(day.workouts||{})};
+
+    const prev = getSetsData(ex.id, total);
+    const updated = prev.map((s,i) => i===setIdx ? {...s, [field]: value} : {...s});
+    // auto-mark done when weight+reps filled in
+    if(field==="done") updated[setIdx].done = value;
+    day.workouts[ex.id+"_sets"] = updated;
+    day.workouts[ex.id] = updated.every(s=>s.done);
+
+    newLogs[selectedDate] = day;
+    setLogs(newLogs);
+    await storageSet("logs", newLogs);
+
+    if(field==="done" && value) {
+      onStartTimer({ exercise:ex, setNum:setIdx+1, totalSets:total, color:plan.color });
+    } else if(field==="done" && !value) {
+      onStopTimer();
+    }
+
+    // Celebration check
+    const prevDay = prevRef.current[selectedDate]||{};
+    const allDoneNow = plan.exercises.every(e => {
+      const n=numSets(e); const s=Array.from({length:n},(_,i)=>!!((day.workouts[e.id+"_sets"]||[])[i]?.done));
+      return s.every(Boolean);
+    });
+    const allDonePrev = plan.exercises.every(e => {
+      const n=numSets(e); const s=Array.from({length:n},(_,i)=>!!((prevDay.workouts||{})[e.id+"_sets"]?.[i]?.done));
+      return s.every(Boolean);
+    });
+    if(allDoneNow && !allDonePrev && plan.exercises.length>0)
+      onCelebrate({emoji:"💪",title:"WORKOUT COMPLETE!",msg:`${plan.name} destroyed. Every set done.`});
+
+    prevRef.current[selectedDate] = day;
+  }, [logs, selectedDate, plan, numSets, getSetsData, setLogs, onCelebrate, onStartTimer, onStopTimer]);
+
+  const update = useCallback(async (path, val) => {
+    const newLogs = {...logs};
+    const day = {...(newLogs[selectedDate]||{})};
+    if(path[0]==="meals") { day.meals={...(day.meals||{})}; day.meals[path[1]]=val; }
+    else if(path[0]==="supplements") { day.supplements={...(day.supplements||{})}; day.supplements[path[1]]=val; }
+    else if(path[0]==="weight") { day.weight=val; }
+    newLogs[selectedDate]=day;
+    setLogs(newLogs);
+    await storageSet("logs",newLogs);
+
+    const prev = prevRef.current[selectedDate]||{};
+    if(path[0]==="meals" && val===true) {
+      const dn = MEALS.filter(m=>(day.meals||{})[m.id]).length;
+      const db = MEALS.filter(m=>(prev.meals||{})[m.id]).length;
+      if(dn===MEALS.length && db<MEALS.length)
+        onCelebrate({emoji:"🍽️",title:"ALL MEALS HIT!",msg:"Nutrition on point. Muscles are feasting."});
+    }
+    if(path[0]==="supplements" && val===true) {
+      const dn = SUPPLEMENTS.filter(s=>(day.supplements||{})[s.id]).length;
+      const db = SUPPLEMENTS.filter(s=>(prev.supplements||{})[s.id]).length;
+      if(dn===SUPPLEMENTS.length && db<SUPPLEMENTS.length)
+        onCelebrate({emoji:"💊",title:"SUPPLEMENTS DONE!",msg:"Stack complete. Optimization mode activated."});
+    }
+    prevRef.current[selectedDate] = day;
+  }, [logs, selectedDate, setLogs, onCelebrate]);
+
+  // Count completed exercises (all sets done) for tab badge
+  const exDoneCount = plan.exercises.filter(ex => {
+    const total = numSets(ex);
+    const sets = setsDoneFor(ex.id, total);
+    return sets.every(Boolean);
+  }).length;
+
+  // Workout cards stay collapsed except the one you're on (first unfinished, or the one resting).
+  // Tapping a card overrides that for the day; finished cards fold away on their own.
+  const [openOverride, setOpenOverride] = useState({});
+  const [flippedEx, setFlippedEx] = useState({});
+  useEffect(() => { setOpenOverride({}); setFlippedEx({}); }, [selectedDate]);
+  const currentExId = (plan.exercises.find(ex => !setsDoneFor(ex.id, numSets(ex)).every(Boolean)) || {}).id;
+  const isOpen = (ex) => ex.id in openOverride ? openOverride[ex.id]
+    : ex.id === currentExId || activeTimer?.exercise?.id === ex.id;
+  const toggleOpen = (ex) => setOpenOverride(o => ({...o, [ex.id]: !isOpen(ex)}));
+  const allOpen = plan.exercises.length > 0 && plan.exercises.every(isOpen);
+  const setAllOpen = (v) => setOpenOverride(Object.fromEntries(plan.exercises.map(ex => [ex.id, v])));
+
+  const saveWeight = useCallback(async () => {
+    const w = parseFloat(weightInput);
+    if(isNaN(w)||w<100||w>400) return;
+    await update(["weight"], w);
+    // Check milestones
+    const gained = w - profile.startWeight;
+    for(const m of MILESTONES) {
+      const prev = logs[selectedDate]?.weight;
+      if(gained>=m.lbs && (!prev||prev-profile.startWeight<m.lbs))
+        onCelebrate(m);
+    }
+  }, [weightInput, update, profile, logs, selectedDate]);
+
+  const tabs = [
+    {id:"workout",    label:"Workout",    icon:"💪", count: plan.exercises.length > 0 ? `${exDoneCount}/${plan.exercises.length}` : "Rest"},
+    {id:"meals",      label:"Meals",      icon:"🍽️", count: `${MEALS.filter(m=>(log.meals||{})[m.id]).length}/${MEALS.length}`},
+    {id:"supps",      label:"Supps",      icon:"💊", count: `${SUPPLEMENTS.filter(s=>(log.supplements||{})[s.id]).length}/${SUPPLEMENTS.length}`},
+    {id:"weight",     label:"Weight",     icon:"⚖️", count: log.weight ? `${log.weight}` : "—"},
+  ];
+
+  return (
+    <div style={{display:"flex",flexDirection:"column",height:"100%", animation:MOTION?"none":"fadeUp 0.4s ease both"}}>
+      {/* Date header */}
+      <div style={{padding:"16px 16px 0"}}>
+        <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:"#888aaa"}}>{dateLabel}</div>
+        <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:900,color:"#fff",letterSpacing:0.5}}>
+          <span style={{color:plan.color}}>{plan.emoji} {plan.name}</span>
+        </div>
+        <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:"#555577",marginTop:2}}>{plan.sub}</div>
+      </div>
+
+      {/* Tab bar */}
+      <div style={{display:"flex",padding:"12px 16px 0",gap:8,overflowX:"auto"}}>
+        {tabs.map(t => (
+          <button key={t.id} onClick={()=>setTab(t.id)} style={{
+            display:"flex",alignItems:"center",gap:6,padding:"8px 14px",borderRadius:12,border:"none",cursor:"pointer",
+            background: tab===t.id ? "#f0b429" : "#1a1a2e",
+            color: tab===t.id ? "#000" : "#888aaa",
+            fontFamily:"'DM Sans',sans-serif", fontWeight:600, fontSize:12, whiteSpace:"nowrap",
+            transition:"all 0.2s",
+          }}>
+            <span>{t.icon}</span>{t.label}
+            <span style={{
+              background: tab===t.id ? "rgba(0,0,0,0.2)" : "rgba(255,255,255,0.08)",
+              borderRadius:6, padding:"1px 6px", fontSize:10, fontWeight:700
+            }}>{t.count}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* Content */}
+      <div style={{flex:1, overflowY:"auto", padding:"14px 16px 16px"}}>
+        {/* WORKOUT TAB */}
+        {tab==="workout" && (
+          plan.type==="rest" ? (
+            <div style={{textAlign:"center",padding:"40px 20px"}}>
+              <div style={{fontSize:60,marginBottom:16}}>{plan.emoji}</div>
+              <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:28,fontWeight:800,color:"#fff"}}>{plan.name}</div>
+              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:14,color:"#888aaa",marginTop:8}}>{plan.sub}</div>
+              <div style={{marginTop:20,padding:"16px",background:"#111120",borderRadius:16,fontSize:14,color:"#555577",lineHeight:1.6,fontFamily:"'DM Sans',sans-serif"}}>
+                Focus on nutrition, sleep 8–9 hrs, foam roll, and light walking. This is when muscles GROW.
+              </div>
+            </div>
+          ) : (
+            <>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",margin:"-4px 2px 10px"}}>
+                <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:"#555577"}}>Tap a card to open · ↻ flips to the plan</span>
+                <button onClick={() => setAllOpen(!allOpen)} style={{background:"none",border:"none",cursor:"pointer",color:plan.color,fontFamily:"'DM Sans',sans-serif",fontSize:11,fontWeight:600,padding:"4px 0"}}>
+                  {allOpen ? "Collapse all" : "Expand all"}
+                </button>
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                {plan.exercises.map((ex, i) => {
+                  const total     = numSets(ex);
+                  const setsData  = getSetsData(ex.id, total);
+                  const allDone   = setsData.every(s=>s.done);
+                  const anyDone   = setsData.some(s=>s.done);
+                  const doneCount = setsData.filter(s=>s.done).length;
+                  const isActive  = activeTimer?.exercise?.id === ex.id;
+                  const lastSess  = getLastSession(ex.id, total);
+                  const open      = isOpen(ex);
+                  const flipped   = !!flippedEx[ex.id];
+                  const lastLogged = (lastSess || []).filter(s => s.lbs || s.reps);
+
+                  return (
+                    <div key={ex.id} style={{
+                      background: allDone ? `${plan.color}18` : anyDone ? `${plan.color}09` : "#111120",
+                      borderRadius:18,
+                      border: isActive ? `2px solid ${plan.color}` : allDone ? `1px solid ${plan.color}44` : "1px solid #1a1a2e",
+                      overflow:"hidden", transition:"all 0.25s",
+                      animation:`fadeUp 0.3s ${i*0.06}s both`,
+                    }}>
+
+                      {/* Exercise header: tap to open / collapse */}
+                      <div role="button" tabIndex={0} aria-expanded={open}
+                        onClick={() => toggleOpen(ex)}
+                        onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleOpen(ex); } }}
+                        style={{display:"flex",alignItems:"center",gap:12,padding: open ? "12px 14px 8px" : "12px 14px",cursor:"pointer",transition:"padding 0.3s ease"}}>
+                        <div style={{
+                          width:34,height:34,borderRadius:10,flexShrink:0,
+                          background: allDone ? plan.color : anyDone ? `${plan.color}33` : "rgba(255,255,255,0.06)",
+                          display:"flex",alignItems:"center",justifyContent:"center",
+                          fontFamily:"'Barlow Condensed',sans-serif",fontSize:13,fontWeight:900,
+                          color: allDone ? "#000" : plan.color, transition:"all 0.25s",
+                        }}>
+                          {allDone ? "✓" : anyDone ? `${doneCount}/${total}` : ""}
+                        </div>
+                        <div style={{flex:1}}>
+                          <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:14,fontWeight:600,
+                            color: allDone ? "rgba(255,255,255,0.4)":"#fff",
+                            textDecoration: allDone?"line-through":"none",
+                          }}>{ex.name}</div>
+                          <div style={{display:"flex",gap:8,marginTop:2,flexWrap:"wrap"}}>
+                            <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:12,color:plan.color,fontWeight:700}}>{ex.sets} sets · {ex.reps} reps</span>
+                            <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:12,color:"#444466"}}>↺ {ex.rest}</span>
+                          </div>
+                        </div>
+                        {isActive && <div style={{fontSize:15,animation:"streakBounce 0.8s ease-in-out infinite"}}>⏱️</div>}
+                        {allDone && !isActive && <div style={{fontSize:17,animation:"pop 0.3s ease"}}>⚡</div>}
+                        {/* collapsed: one dot per set, so progress reads at a glance */}
+                        {!open && (
+                          <div style={{display:"flex",gap:3}}>
+                            {setsData.map((s, si) => <div key={si} style={{width:6,height:6,borderRadius:"50%",background: s.done ? plan.color : "rgba(255,255,255,0.12)"}}/>)}
+                          </div>
+                        )}
+                        {open && (
+                          <button aria-label={flipped ? "Show set log" : "Show plan and last session"}
+                            onClick={e => { e.stopPropagation(); setFlippedEx(f => ({...f, [ex.id]: !flipped})); }}
+                            style={{display:"flex",alignItems:"center",gap:4,padding:"5px 9px",borderRadius:9,cursor:"pointer",
+                              border:`1px solid ${plan.color}44`, background: flipped ? `${plan.color}22` : "rgba(255,255,255,0.04)",
+                              color: plan.color, fontFamily:"'Barlow Condensed',sans-serif", fontSize:12, fontWeight:800, letterSpacing:0.5}}>
+                            <span style={{display:"inline-block",transition:"transform 0.6s ease",transform:`rotate(${flipped ? 180 : 0}deg)`}}>↻</span>
+                            {flipped ? "LOG" : "PLAN"}
+                          </button>
+                        )}
+                        <div style={{color:"#555577",fontSize:12,transition:"transform 0.35s ease",transform:`rotate(${open ? 180 : 0}deg)`}}>▾</div>
+                      </div>
+
+                      <FlipPanel open={open} flipped={flipped}
+                        back={
+                          <div style={{paddingBottom:12}}>
+                            <PyramidSuggestion exercise={ex} numSets={total} lastSessionSets={lastSess} planColor={plan.color} alwaysOpen/>
+                            <div style={{margin:"0 14px",padding:"8px 12px",background:"rgba(255,255,255,0.03)",borderRadius:10}}>
+                              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:9,fontWeight:600,color:"#444466",textTransform:"uppercase",letterSpacing:0.5,marginBottom:6}}>Last session</div>
+                              {lastLogged.length ? (
+                                <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                                  {lastSess.map((s, si) => (s.lbs || s.reps) ? (
+                                    <div key={si} style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:14,fontWeight:700,color:"#fff",background:"rgba(255,255,255,0.05)",borderRadius:8,padding:"4px 8px"}}>
+                                      <span style={{color:"#555577"}}>S{si+1} </span>{s.lbs || "BW"}{s.reps ? ` × ${s.reps}` : ""}
+                                    </div>
+                                  ) : null)}
+                                </div>
+                              ) : (
+                                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:"#444466"}}>Nothing logged yet for this exercise</div>
+                              )}
+                              <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:12,color:plan.color,fontWeight:700,marginTop:8}}>
+                                Target: {ex.sets} sets · {ex.reps} reps · rest {ex.rest}
+                              </div>
+                            </div>
+                          </div>
+                        }
+                        front={<>
+
+                      {/* Column headers */}
+                      <div style={{display:"grid",gridTemplateColumns:"32px 1fr 1fr 40px",gap:6,padding:"0 14px 6px",alignItems:"center"}}>
+                        {["SET","WEIGHT (lbs)","REPS DONE",""].map((h,hi)=>(
+                          <div key={hi} style={{fontFamily:"'DM Sans',sans-serif",fontSize:9,fontWeight:600,color:"#444466",textTransform:"uppercase",letterSpacing:0.5,textAlign: hi===3?"center":"left"}}>{h}</div>
+                        ))}
+                      </div>
+
+                      {/* Per-set rows */}
+                      <div style={{display:"flex",flexDirection:"column",gap:5,padding:"0 14px 12px"}}>
+                        {setsData.map((s, si) => {
+                          const isTiming = isActive && activeTimer?.setNum === si+1;
+                          return (
+                            <div key={si} style={{
+                              display:"grid", gridTemplateColumns:"32px 1fr 1fr 40px", gap:6, alignItems:"center",
+                              padding:"6px 8px", borderRadius:10,
+                              background: isTiming ? `${plan.color}22` : s.done ? `${plan.color}14` : "rgba(255,255,255,0.03)",
+                              border: isTiming ? `1px solid ${plan.color}66` : s.done ? `1px solid ${plan.color}22` : "1px solid transparent",
+                              transition:"all 0.2s",
+                            }}>
+                              {/* Set badge */}
+                              <div style={{
+                                fontFamily:"'Barlow Condensed',sans-serif",fontSize:13,fontWeight:900,
+                                color: s.done ? plan.color : "#555577", textAlign:"center",
+                              }}>S{si+1}</div>
+
+                              {/* Weight input */}
+                              <input
+                                type="number" step="2.5" min="0" max="999"
+                                value={s.lbs}
+                                placeholder="lbs"
+                                onChange={e => updateSet(ex, si, "lbs", e.target.value)}
+                                style={{
+                                  padding:"5px 8px", borderRadius:8,
+                                  background: s.done ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.07)",
+                                  border:`1px solid ${s.lbs ? plan.color+"55" : "rgba(255,255,255,0.08)"}`,
+                                  color: s.lbs ? "#fff" : "#444466",
+                                  fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:700,
+                                  width:"100%", outline:"none", textAlign:"center",
+                                }}
+                              />
+
+                              {/* Reps input */}
+                              <input
+                                type="number" step="1" min="0" max="99"
+                                value={s.reps}
+                                placeholder={ex.reps.split("–")[0]}
+                                onChange={e => updateSet(ex, si, "reps", e.target.value)}
+                                style={{
+                                  padding:"5px 8px", borderRadius:8,
+                                  background: s.done ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.07)",
+                                  border:`1px solid ${s.reps ? "#39d98a55" : "rgba(255,255,255,0.08)"}`,
+                                  color: s.reps ? "#fff" : "#444466",
+                                  fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:700,
+                                  width:"100%", outline:"none", textAlign:"center",
+                                }}
+                              />
+
+                              {/* Done toggle */}
+                              <button
+                                onClick={() => updateSet(ex, si, "done", !s.done)}
+                                style={{
+                                  width:34, height:34, borderRadius:9, border:"none", cursor:"pointer",
+                                  background: isTiming ? `${plan.color}44` : s.done ? plan.color : "rgba(255,255,255,0.07)",
+                                  color: s.done ? "#000" : isTiming ? plan.color : "#333355",
+                                  fontSize: isTiming ? 14 : 13,
+                                  transition:"all 0.2s",
+                                  transform: isTiming ? "scale(1.1)" : "scale(1)",
+                                  boxShadow: isTiming ? `0 0 10px ${plan.color}55` : "none",
+                                  display:"flex",alignItems:"center",justifyContent:"center",
+                                  margin:"0 auto",
+                                }}
+                              >{isTiming ? "⏱" : s.done ? "✓" : "○"}</button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      </>}/>
+
+                      {/* Progress bar */}
+                      <div style={{height:2,background:"rgba(255,255,255,0.04)"}}>
+                        <div style={{height:"100%",width:`${(doneCount/total)*100}%`,background:`linear-gradient(90deg,${plan.color}66,${plan.color})`,transition:"width 0.4s ease"}}/>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )
+        )}
+
+        {/* MEALS TAB */}
+        {tab==="meals" && (
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {MEALS.map((meal, i) => {
+              const done = !!(log.meals||{})[meal.id];
+              return (
+                <div key={meal.id} onClick={() => update(["meals",meal.id], !done)}
+                  style={{
+                    display:"flex",alignItems:"flex-start",gap:14,padding:"14px 16px",
+                    background: done ? "#39d98a18" : "#111120",
+                    borderRadius:14, cursor:"pointer",
+                    border: done ? "1px solid #39d98a44" : "1px solid #1a1a2e",
+                    transition:"all 0.25s", animation:`fadeUp 0.3s ${i*0.05}s both`,
+                  }}>
+                  <div style={{
+                    width:42,height:42,borderRadius:12,flexShrink:0,
+                    background: done ? "#39d98a" : "rgba(255,255,255,0.06)",
+                    display:"flex",alignItems:"center",justifyContent:"center",
+                    fontSize:22, transition:"all 0.2s",
+                  }}>{done?"✓":meal.emoji}</div>
+                  <div style={{flex:1}}>
+                    <div style={{display:"flex",justifyContent:"space-between"}}>
+                      <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:14,fontWeight:600,color:done?"rgba(255,255,255,0.5)":"#fff",textDecoration:done?"line-through":"none"}}>{meal.name}</div>
+                      <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:13,color:"#888aaa"}}>{meal.time}</div>
+                    </div>
+                    <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:"#888aaa",marginTop:3,lineHeight:1.4}}>{meal.foods}</div>
+                    <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:12,color:"#39d98a",marginTop:4,fontWeight:700}}>{meal.macros}</div>
+                  </div>
+                </div>
+              );
+            })}
+            <div style={{background:"#111120",borderRadius:14,padding:"12px 16px",border:"1px solid #1a1a2e"}}>
+              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:"#888aaa",marginBottom:6}}>Daily target</div>
+              <div style={{display:"flex",gap:16}}>
+                {[["Protein","190g","#ff6b6b"],["Carbs","375g","#f0b429"],["Fats","100g","#4fc3f7"],["Kcal","3,160","#39d98a"]].map(([l,v,c])=>(
+                  <div key={l} style={{textAlign:"center"}}>
+                    <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:18,fontWeight:800,color:c}}>{v}</div>
+                    <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:"#555577"}}>{l}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* SUPPLEMENTS TAB */}
+        {tab==="supps" && (
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {SUPPLEMENTS.map((supp, i) => {
+              const done = !!(log.supplements||{})[supp.id];
+              return (
+                <div key={supp.id} onClick={() => update(["supplements",supp.id], !done)}
+                  style={{
+                    display:"flex",alignItems:"center",gap:14,padding:"14px 16px",
+                    background: done ? `${supp.color}14` : "#111120",
+                    borderRadius:14, cursor:"pointer",
+                    border: done ? `1px solid ${supp.color}44` : "1px solid #1a1a2e",
+                    transition:"all 0.25s", animation:`fadeUp 0.3s ${i*0.05}s both`,
+                  }}>
+                  <div style={{
+                    width:44,height:44,borderRadius:12,flexShrink:0,
+                    background: done ? supp.color : "rgba(255,255,255,0.06)",
+                    display:"flex",alignItems:"center",justifyContent:"center",
+                    fontSize:22, transition:"all 0.2s",
+                  }}>{done?"✓":supp.emoji}</div>
+                  <div style={{flex:1}}>
+                    <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:14,fontWeight:600,color:done?"rgba(255,255,255,0.5)":"#fff",textDecoration:done?"line-through":"none"}}>{supp.name}</div>
+                    <div style={{display:"flex",gap:10,marginTop:3}}>
+                      <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:13,color:supp.color,fontWeight:700}}>{supp.dose}</span>
+                      <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:13,color:"#555577"}}>{supp.timing}</span>
+                    </div>
+                  </div>
+                  {done && <div style={{fontSize:18,animation:"pop 0.3s ease"}}>✅</div>}
+                </div>
+              );
+            })}
+            <div style={{background:"#1a0a00",borderRadius:14,padding:"12px 16px",border:"1px solid #f0b42922"}}>
+              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:"#f0b429",fontWeight:600}}>⭐ AA Priority · 🌿 Dairy-Free</div>
+              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:"#888aaa",marginTop:4}}>Pea + Rice protein = complete amino profile, gut-friendly. Vit D3 4,000–6,000 IU · Omega-3 3–4g EPA/DHA · Magnesium 400mg — critical for Black men. Get bloodwork to confirm dosing.</div>
+            </div>
+          </div>
+        )}
+
+        {/* WEIGHT TAB */}
+        {tab==="weight" && (
+          <div style={{display:"flex",flexDirection:"column",gap:16}}>
+            <div style={{background:"#111120",borderRadius:16,padding:20,border:"1px solid #1a1a2e"}}>
+              <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:13,color:"#888aaa",marginBottom:12}}>Log today's weight</div>
+              <div style={{display:"flex",gap:10,alignItems:"center"}}>
+                <input
+                  type="number" step="0.1" value={weightInput}
+                  onChange={e=>setWeightInput(e.target.value)}
+                  placeholder="e.g. 177.5"
+                  style={{
+                    flex:1, padding:"14px 16px",
+                    background:"#0e0e1c", border:"1px solid #2a2a3e", borderRadius:12,
+                    fontFamily:"'Barlow Condensed',sans-serif", fontSize:24, fontWeight:700, color:"#fff",
+                    outline:"none", textAlign:"center",
+                  }}
+                />
+                <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,color:"#888aaa",fontWeight:600}}>lbs</span>
+              </div>
+              <button onClick={saveWeight} style={{
+                width:"100%", marginTop:12, padding:"14px",
+                background:"linear-gradient(135deg,#f0b429,#ff8f00)",
+                border:"none", borderRadius:12, cursor:"pointer",
+                fontFamily:"'Barlow Condensed',sans-serif", fontSize:18, fontWeight:800, color:"#000", letterSpacing:1,
+              }}>SAVE WEIGHT</button>
+            </div>
+            {log.weight && (
+              <div style={{background:"#111120",borderRadius:16,padding:20,border:"1px solid #39d98a44",textAlign:"center"}}>
+                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:13,color:"#888aaa"}}>Today's logged weight</div>
+                <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:48,fontWeight:900,color:"#f0b429",lineHeight:1}}>{log.weight} <span style={{fontSize:24}}>lbs</span></div>
+                {log.weight > 175 && (
+                  <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:14,color:"#39d98a",marginTop:8}}>
+                    +{(log.weight-175).toFixed(1)} lbs gained 💪
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ─── CALENDAR ───────────────────────────────────────────────────────────── */
+function Calendar({ logs, selectedDate, setSelectedDate, setView }) {
+  const today = todayKey();
+  const [viewDate, setViewDate] = useState(new Date(today + "T12:00:00"));
+
+  const year = viewDate.getFullYear(), month = viewDate.getMonth();
+  const firstDay = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month+1, 0).getDate();
+
+  const getCompletion = (key) => {
+    const log = logs[key];
+    if(!log) return null;
+    const dow = DOW(key);
+    const plan = WEEKLY_PLAN[dow];
+    const wDone = plan.exercises.filter(e=>(log.workouts||{})[e.id]).length;
+    const mDone = MEALS.filter(m=>(log.meals||{})[m.id]).length;
+    const sDone = SUPPLEMENTS.filter(s=>(log.supplements||{})[s.id]).length;
+    const total = plan.exercises.length + MEALS.length + SUPPLEMENTS.length;
+    const done = wDone + mDone + sDone;
+    if(total===0) return null;
+    return done/total;
+  };
+
+  const cells = [];
+  for(let i=0;i<firstDay;i++) cells.push(null);
+  for(let d=1;d<=daysInMonth;d++) cells.push(d);
+
+  return (
+    <div style={{padding:"16px", animation:MOTION?"none":"fadeUp 0.4s ease both"}}>
+      {/* Month nav */}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+        <button onClick={()=>setViewDate(new Date(year,month-1,1))} style={{background:"#1a1a2e",border:"none",color:"#fff",padding:"8px 14px",borderRadius:10,cursor:"pointer",fontSize:18}}>‹</button>
+        <div style={{textAlign:"center"}}>
+          <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:30,fontWeight:900,color:"#fff",letterSpacing:1}}>{["JANUARY","FEBRUARY","MARCH","APRIL","MAY","JUNE","JULY","AUGUST","SEPTEMBER","OCTOBER","NOVEMBER","DECEMBER"][month]}</div>
+          <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:13,color:"#888aaa"}}>{year}</div>
+        </div>
+        <button onClick={()=>setViewDate(new Date(year,month+1,1))} style={{background:"#1a1a2e",border:"none",color:"#fff",padding:"8px 14px",borderRadius:10,cursor:"pointer",fontSize:18}}>›</button>
+      </div>
+
+      {/* Day headers */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:4,marginBottom:6}}>
+        {["S","M","T","W","T","F","S"].map((d,i)=>(
+          <div key={i} style={{textAlign:"center",fontFamily:"'DM Sans',sans-serif",fontSize:11,fontWeight:600,color:"#555577",padding:"4px 0"}}>{d}</div>
+        ))}
+      </div>
+
+      {/* Calendar grid */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:5}}>
+        {cells.map((day, i) => {
+          if(!day) return <div key={`e${i}`}/>;
+          const key = getDateKey(year,month,day);
+          const comp = getCompletion(key);
+          const isToday = key===today;
+          const isSel = key===selectedDate;
+          const future = key > today;
+          let bg = "#111120", border="1px solid #1a1a2e", dotColor=null;
+          if(comp!==null && !future) {
+            if(comp>=0.9) { bg="#39d98a22"; border="1px solid #39d98a55"; dotColor="#39d98a"; }
+            else if(comp>=0.5) { bg="#f0b42922"; border="1px solid #f0b42955"; dotColor="#f0b429"; }
+            else if(comp>0) { bg="#ff6b6b18"; border="1px solid #ff6b6b33"; dotColor="#ff6b6b"; }
+          }
+          if(isSel) { bg="#f0b42933"; border="2px solid #f0b429"; }
+          if(isToday && !isSel) { border="2px solid #4fc3f7"; }
+          return (
+            <div key={key} onClick={()=>{ setSelectedDate(key); setView("log"); }}
+              style={{
+                aspectRatio:"1",background:bg,border,borderRadius:12,
+                display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+                cursor:future?"default":"pointer",position:"relative",
+                opacity:future?0.3:1,transition:"all 0.15s",
+              }}>
+              <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:isSel||isToday?800:600,color:isSel?"#f0b429":isToday?"#4fc3f7":"#fff"}}>{day}</div>
+              {dotColor && <div style={{width:5,height:5,borderRadius:"50%",background:dotColor,marginTop:2}}/>}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Legend */}
+      <div style={{display:"flex",gap:20,justifyContent:"center",marginTop:20,flexWrap:"wrap"}}>
+        {[["#39d98a","90%+ Complete"],["#f0b429","50–89%"],["#ff6b6b","< 50%"],["#4fc3f7","Today"]].map(([c,l])=>(
+          <div key={l} style={{display:"flex",alignItems:"center",gap:6}}>
+            <div style={{width:10,height:10,borderRadius:"50%",background:c}}/>
+            <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:"#888aaa"}}>{l}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Week summary */}
+      <div style={{marginTop:20,background:"#111120",borderRadius:16,padding:16,border:"1px solid #1a1a2e"}}>
+        <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:18,fontWeight:800,color:"#fff",marginBottom:12}}>WEEKLY SCHEDULE</div>
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          {[1,2,3,4,5,6,0].map(dow=>{
+            const p = WEEKLY_PLAN[dow];
+            return (
+              <div key={dow} style={{display:"flex",alignItems:"center",gap:12,padding:"8px 12px",background:"#0e0e1c",borderRadius:10}}>
+                <div style={{width:8,height:8,borderRadius:"50%",background:p.color,flexShrink:0}}/>
+                <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:700,color:"#fff",width:32,flexShrink:0}}>{["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][dow]}</div>
+                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:"#888aaa",flex:1}}>{p.name}</div>
+                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:"#555577"}}>{p.exercises.length>0?`${p.exercises.length} exercises`:"Rest"}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── PROGRESS ───────────────────────────────────────────────────────────── */
+function Progress({ logs, setLogs, profile, setProfile, onCelebrate }) {
+  const [editProfile, setEditProfile] = useState(false);
+  const [sw, setSw] = useState(String(profile.startWeight));
+  const [sd, setSd] = useState(profile.startDate||todayKey());
+  const [chartRange, setChartRange] = useState("all");
+  const [editingEntry, setEditingEntry] = useState(null); // date key being edited
+  const [editVal, setEditVal] = useState("");
+  const [addDate, setAddDate] = useState("");
+  const [addVal, setAddVal] = useState("");
+  const [showAddForm, setShowAddForm] = useState(false);
+  const today = todayKey();
+
+  // All weight entries sorted oldest → newest
+  const allWeightData = Object.entries(logs)
+    .filter(([,l]) => l.weight)
+    .sort(([a],[b]) => a.localeCompare(b))
+    .map(([date, l]) => ({ date, w: l.weight }));
+
+  const filtered = chartRange === "all" ? allWeightData
+    : chartRange === "30" ? allWeightData.slice(-30)
+    : allWeightData.slice(-7);
+
+  const currentWeight = allWeightData.length > 0 ? allWeightData[allWeightData.length-1].w : profile.startWeight;
+  const gained = currentWeight - profile.startWeight;
+  const gainPct = Math.min(100, Math.max(0, gained / 20 * 100));
+  const daysLogged = Object.keys(logs).length;
+  const totalWorkouts = Object.values(logs).reduce((acc,l,_,arr) => {
+    const key = Object.keys(logs)[Object.values(logs).indexOf(l)];
+    const dow = key ? DOW(key) : 0;
+    const p = WEEKLY_PLAN[dow];
+    return acc + (p.exercises.filter(e => (l.workouts||{})[e.id]).length > 0 ? 1 : 0);
+  }, 0);
+
+  // 7-day trend (avg last 7 vs avg previous 7)
+  const last7 = allWeightData.slice(-7).map(d=>d.w);
+  const prev7 = allWeightData.slice(-14,-7).map(d=>d.w);
+  const avgLast7 = last7.length ? last7.reduce((a,b)=>a+b,0)/last7.length : null;
+  const avgPrev7 = prev7.length ? prev7.reduce((a,b)=>a+b,0)/prev7.length : null;
+  const weekTrend = (avgLast7 && avgPrev7) ? avgLast7 - avgPrev7 : null;
+
+  // Heaviest / lightest
+  const allW = allWeightData.map(d=>d.w);
+  const heaviest = allW.length ? Math.max(...allW) : null;
+  const lightest = allW.length ? Math.min(...allW) : null;
+
+  // Weekly averages
+  const weeklyAvgs = (() => {
+    if(allWeightData.length < 2) return [];
+    const byWeek = {};
+    allWeightData.forEach(({date, w}) => {
+      const d = new Date(date+"T12:00:00");
+      const yr = d.getFullYear();
+      const wk = Math.ceil(((d - new Date(yr,0,1))/86400000 + new Date(yr,0,1).getDay()+1)/7);
+      const key = `${yr}-W${String(wk).padStart(2,"0")}`;
+      if(!byWeek[key]) byWeek[key] = [];
+      byWeek[key].push(w);
+    });
+    return Object.entries(byWeek)
+      .sort(([a],[b])=>a.localeCompare(b))
+      .map(([wk, ws]) => ({ wk, avg: ws.reduce((a,b)=>a+b,0)/ws.length, count: ws.length }));
+  })();
+
+  const saveProfile = async () => {
+    const newP = {...profile, startWeight:parseFloat(sw)||175, startDate:sd, currentWeight};
+    setProfile(newP);
+    await storageSet("profile", newP);
+    setEditProfile(false);
+  };
+
+  const saveEditEntry = async (dateKey) => {
+    const w = parseFloat(editVal);
+    if(isNaN(w)||w<100||w>400) { setEditingEntry(null); return; }
+    const newLogs = {...logs, [dateKey]: {...(logs[dateKey]||{}), weight: w}};
+    setLogs(newLogs);
+    await storageSet("logs", newLogs);
+    setEditingEntry(null);
+    // milestone check
+    const gained2 = w - profile.startWeight;
+    for(const m of MILESTONES) {
+      if(gained2 >= m.lbs && gained < m.lbs) { onCelebrate(m); break; }
+    }
+  };
+
+  const deleteEntry = async (dateKey) => {
+    const newLogs = {...logs};
+    if(newLogs[dateKey]) {
+      const day = {...newLogs[dateKey]};
+      delete day.weight;
+      newLogs[dateKey] = day;
+    }
+    setLogs(newLogs);
+    await storageSet("logs", newLogs);
+  };
+
+  const saveAddEntry = async () => {
+    if(!addDate || !addVal) return;
+    const w = parseFloat(addVal);
+    if(isNaN(w)||w<100||w>400) return;
+    const newLogs = {...logs, [addDate]: {...(logs[addDate]||{}), weight: w}};
+    setLogs(newLogs);
+    await storageSet("logs", newLogs);
+    setAddDate(""); setAddVal(""); setShowAddForm(false);
+    const gained2 = w - profile.startWeight;
+    for(const m of MILESTONES) {
+      if(gained2 >= m.lbs && gained < m.lbs) { onCelebrate(m); break; }
+    }
+  };
+
+  // SVG chart
+  const chartH = 130, chartW = 310;
+  let chartPath = "", chartArea = "", chartPoints = [];
+  if(filtered.length >= 2) {
+    const ws = filtered.map(d=>d.w);
+    const mn = Math.min(...ws) - 1.5, mx = Math.max(...ws) + 1.5;
+    chartPoints = filtered.map((d,i) => ({
+      x: (i/(filtered.length-1))*chartW,
+      y: chartH - ((d.w-mn)/(mx-mn))*chartH,
+      w: d.w, date: d.date,
+    }));
+    const ptStr = chartPoints.map(p=>`${p.x},${p.y}`).join(" L ");
+    chartPath  = `M ${ptStr}`;
+    chartArea  = `M ${chartPoints[0].x},${chartPoints[0].y} L ${ptStr} L ${chartW},${chartH} L 0,${chartH} Z`;
+  }
+
+  // Y-axis labels
+  const yLabels = (() => {
+    if(filtered.length < 2) return [];
+    const ws = filtered.map(d=>d.w);
+    const mn = Math.floor(Math.min(...ws)-1), mx = Math.ceil(Math.max(...ws)+1);
+    const step = Math.ceil((mx-mn)/4);
+    const out = [];
+    for(let v=mn; v<=mx; v+=step) out.push(v);
+    return out.map(v=>({
+      v, y: chartH - ((v-mn+1.5)/((mx-mn)+3))*chartH,
+    }));
+  })();
+
+  const badges = [
+    {lbs:1,emoji:"🌱",label:"First Pound"},{lbs:2,emoji:"💧",label:"2 lbs"},
+    {lbs:5,emoji:"🔥",label:"5 lbs"},{lbs:10,emoji:"⚡",label:"10 lbs"},
+    {lbs:15,emoji:"💎",label:"15 lbs"},{lbs:20,emoji:"🏆",label:"Goal!"},
+  ];
+
+  const S = {
+    label: {fontFamily:"'DM Sans',sans-serif",fontSize:10,color:"#555577",fontWeight:600,textTransform:"uppercase",letterSpacing:0.5},
+    val:   {fontFamily:"'Barlow Condensed',sans-serif",fontWeight:900},
+    card:  {background:"#111120",borderRadius:16,border:"1px solid #1a1a2e"},
+  };
+
+  return (
+    <div style={{padding:"16px",display:"flex",flexDirection:"column",gap:18,animation:MOTION?"none":"fadeUp 0.4s ease both"}}>
+
+      {/* ── HEADER ── */}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-end"}}>
+        <div>
+          <div style={{...S.val,fontSize:34,color:"#fff",letterSpacing:1}}>
+            WEIGHT <span style={{color:"#f0b429"}}>LOG</span>
+          </div>
+          <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:"#555577",marginTop:2}}>{allWeightData.length} entries recorded</div>
+        </div>
+        <button onClick={()=>setShowAddForm(!showAddForm)} style={{
+          background:showAddForm?"#1a1a2e":"linear-gradient(135deg,#f0b429,#ff8f00)",
+          border:"none",borderRadius:12,padding:"8px 16px",cursor:"pointer",
+          fontFamily:"'Barlow Condensed',sans-serif",fontSize:15,fontWeight:800,
+          color:showAddForm?"#888aaa":"#000",letterSpacing:0.5,
+        }}>{showAddForm ? "✕ Cancel" : "+ ADD ENTRY"}</button>
+      </div>
+
+      {/* ── ADD ENTRY FORM ── */}
+      {showAddForm && (
+        <div style={{...S.card,padding:16,border:"1px solid #f0b42933",animation:"fadeUp 0.3s ease"}}>
+          <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:800,color:"#f0b429",marginBottom:12}}>ADD / UPDATE WEIGHT ENTRY</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+            <div>
+              <div style={{...S.label,marginBottom:5}}>Date</div>
+              <input type="date" value={addDate} onChange={e=>setAddDate(e.target.value)} max={today}
+                style={{width:"100%",padding:"10px 12px",background:"#0e0e1c",border:"1px solid #2a2a3e",borderRadius:10,color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:13,outline:"none"}}/>
+            </div>
+            <div>
+              <div style={{...S.label,marginBottom:5}}>Weight (lbs)</div>
+              <input type="number" step="0.1" value={addVal} onChange={e=>setAddVal(e.target.value)} placeholder="175.0"
+                style={{width:"100%",padding:"10px 12px",background:"#0e0e1c",border:"1px solid #2a2a3e",borderRadius:10,color:"#fff",fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,outline:"none",textAlign:"center"}}/>
+            </div>
+          </div>
+          <button onClick={saveAddEntry} style={{
+            width:"100%",marginTop:12,padding:"12px",
+            background:"linear-gradient(135deg,#f0b429,#ff8f00)",border:"none",borderRadius:10,cursor:"pointer",
+            fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:800,color:"#000",letterSpacing:1,
+          }}>SAVE ENTRY</button>
+        </div>
+      )}
+
+      {/* ── HERO STAT ── */}
+      <div style={{...S.card,padding:20,background:"linear-gradient(135deg,#1a0f00,#111120)",border:"1px solid #f0b42933",position:"relative",overflow:"hidden"}}>
+        <div style={{position:"absolute",right:16,top:10,fontSize:56,opacity:0.06}}>⚖️</div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:16,marginBottom:16}}>
+          <div>
+            <div style={{...S.label}}>Start</div>
+            <div style={{...S.val,fontSize:26,color:"#fff"}}>{profile.startWeight}<span style={{fontSize:14,color:"#555577"}}> lbs</span></div>
+          </div>
+          <div style={{textAlign:"center"}}>
+            <div style={{...S.label}}>Current</div>
+            <div style={{...S.val,fontSize:26,color:"#4fc3f7"}}>{currentWeight}<span style={{fontSize:14,color:"#555577"}}> lbs</span></div>
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div style={{...S.label}}>Goal</div>
+            <div style={{...S.val,fontSize:26,color:"#39d98a"}}>{profile.startWeight+20}<span style={{fontSize:14,color:"#555577"}}> lbs</span></div>
+          </div>
+        </div>
+        <div style={{textAlign:"center",marginBottom:14}}>
+          <div style={{...S.val,fontSize:52,color:gained>=0?"#f0b429":"#ff6b6b",lineHeight:1}}>
+            {gained>=0?"+":""}{gained.toFixed(1)} <span style={{fontSize:24,color:"rgba(255,255,255,0.4)"}}>lbs gained</span>
+          </div>
+        </div>
+        <div style={{height:10,background:"rgba(255,255,255,0.06)",borderRadius:5,overflow:"hidden"}}>
+          <div style={{height:"100%",width:`${gainPct}%`,background:"linear-gradient(90deg,#f0b429,#ff6b6b)",borderRadius:5,transition:"width 1s ease",position:"relative"}}>
+            {gainPct>8&&<div style={{position:"absolute",right:6,top:0,height:"100%",display:"flex",alignItems:"center",fontFamily:"'Barlow Condensed',sans-serif",fontSize:9,fontWeight:800,color:"#000"}}>{gainPct.toFixed(0)}%</div>}
+          </div>
+        </div>
+        <div style={{display:"flex",justifyContent:"space-between",marginTop:5}}>
+          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:"#555577"}}>{profile.startWeight} lbs</span>
+          <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:"#555577"}}>Goal: {profile.startWeight+20} lbs</span>
+        </div>
+      </div>
+
+      {/* ── STAT PILLS ── */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8}}>
+        {[
+          {label:"7-day avg", val: avgLast7 ? avgLast7.toFixed(1) : "—", color:"#4fc3f7", icon:"📊"},
+          {label:"Week trend", val: weekTrend!=null ? `${weekTrend>=0?"+":""}${weekTrend.toFixed(1)}` : "—", color: weekTrend!=null&&weekTrend>=0?"#39d98a":"#ff6b6b", icon: weekTrend!=null&&weekTrend>=0?"📈":"📉"},
+          {label:"Heaviest",  val: heaviest ? heaviest.toFixed(1) : "—", color:"#ff6b6b", icon:"🔺"},
+          {label:"Lightest",  val: lightest ? lightest.toFixed(1) : "—", color:"#39d98a", icon:"🔻"},
+        ].map(s=>(
+          <div key={s.label} style={{...S.card,padding:"12px 8px",textAlign:"center"}}>
+            <div style={{fontSize:16}}>{s.icon}</div>
+            <div style={{...S.val,fontSize:17,color:s.color,marginTop:3}}>{s.val}</div>
+            <div style={{...S.label,marginTop:2,fontSize:9}}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* ── CHART ── */}
+      <div style={{...S.card,padding:18}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+          <div style={{...S.val,fontSize:18,color:"#fff"}}>WEIGHT CHART</div>
+          <div style={{display:"flex",gap:4}}>
+            {[["7","7D"],["30","30D"],["all","All"]].map(([v,l])=>(
+              <button key={v} onClick={()=>setChartRange(v)} style={{
+                padding:"4px 10px",borderRadius:8,border:"none",cursor:"pointer",
+                background: chartRange===v ? "#f0b429" : "#1a1a2e",
+                color: chartRange===v ? "#000" : "#888aaa",
+                fontFamily:"'Barlow Condensed',sans-serif",fontSize:13,fontWeight:700,
+              }}>{l}</button>
+            ))}
+          </div>
+        </div>
+
+        {filtered.length < 2 ? (
+          <div style={{textAlign:"center",padding:"30px 0",color:"#333344",fontFamily:"'DM Sans',sans-serif",fontSize:13}}>
+            Log at least 2 days of weight to see your chart
+          </div>
+        ) : (
+          <div style={{overflowX:"auto"}}>
+            <svg width={chartW+36} height={chartH+32} style={{display:"block",overflow:"visible"}}>
+              <defs>
+                <linearGradient id="cg2" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%" stopColor="#f0b429" stopOpacity="0.35"/>
+                  <stop offset="100%" stopColor="#f0b429" stopOpacity="0"/>
+                </linearGradient>
+              </defs>
+              <g transform="translate(32,4)">
+                {/* Grid lines */}
+                {[0,0.25,0.5,0.75,1].map(t=>(
+                  <line key={t} x1={0} y1={t*chartH} x2={chartW} y2={t*chartH} stroke="rgba(255,255,255,0.04)" strokeWidth="1"/>
+                ))}
+                {/* Area fill */}
+                {chartArea && <path d={chartArea} fill="url(#cg2)"/>}
+                {/* Line */}
+                {chartPath && <path d={chartPath} fill="none" stroke="#f0b429" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>}
+                {/* Points */}
+                {chartPoints.map((p,i)=>(
+                  <g key={i}>
+                    <circle cx={p.x} cy={p.y} r="5" fill="#f0b429" stroke="#07070f" strokeWidth="2"/>
+                    {(i===0||i===chartPoints.length-1||chartPoints.length<=10) && (
+                      <text x={p.x} y={p.y-10} textAnchor="middle" fill="#f0b429"
+                        style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:10,fontWeight:700}}>{p.w}</text>
+                    )}
+                  </g>
+                ))}
+                {/* Y-axis labels */}
+                {yLabels.map(({v,y})=>(
+                  <text key={v} x={-6} y={y+4} textAnchor="end" fill="#555577"
+                    style={{fontFamily:"'DM Sans',sans-serif",fontSize:9}}>{v}</text>
+                ))}
+                {/* X-axis labels */}
+                {filtered.length > 1 && [0, filtered.length-1].map(i=>(
+                  <text key={i} x={chartPoints[i]?.x} y={chartH+16} textAnchor={i===0?"start":"end"} fill="#555577"
+                    style={{fontFamily:"'DM Sans',sans-serif",fontSize:9}}>
+                    {filtered[i]?.date?.slice(5)}
+                  </text>
+                ))}
+              </g>
+            </svg>
+          </div>
+        )}
+      </div>
+
+      {/* ── WEEKLY AVERAGES ── */}
+      {weeklyAvgs.length > 1 && (
+        <div style={{...S.card,padding:18}}>
+          <div style={{...S.val,fontSize:18,color:"#fff",marginBottom:14}}>WEEKLY AVERAGES</div>
+          <div style={{display:"flex",flexDirection:"column",gap:8,maxHeight:220,overflowY:"auto"}}>
+            {[...weeklyAvgs].reverse().map((w,i)=>{
+              const prev = weeklyAvgs[weeklyAvgs.length-2-i];
+              const delta = prev ? w.avg - prev.avg : null;
+              return (
+                <div key={w.wk} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 12px",background:"#0e0e1c",borderRadius:10}}>
+                  <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:"#555577",width:60,flexShrink:0}}>{w.wk}</div>
+                  <div style={{flex:1,height:4,background:"rgba(255,255,255,0.06)",borderRadius:2,overflow:"hidden"}}>
+                    <div style={{height:"100%",width:`${Math.min(100,((w.avg-profile.startWeight)/20)*100)}%`,background:"linear-gradient(90deg,#f0b429,#ff6b6b)",borderRadius:2}}/>
+                  </div>
+                  <div style={{...S.val,fontSize:17,color:"#fff",textAlign:"right",minWidth:54}}>{w.avg.toFixed(1)}</div>
+                  {delta!=null && (
+                    <div style={{...S.val,fontSize:13,color:delta>=0?"#39d98a":"#ff6b6b",minWidth:40,textAlign:"right"}}>
+                      {delta>=0?"+":""}{delta.toFixed(1)}
+                    </div>
+                  )}
+                  <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:"#333355",minWidth:28}}>{w.count}d</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── DAILY LOG TABLE ── */}
+      <div style={{...S.card,padding:18}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+          <div style={{...S.val,fontSize:18,color:"#fff"}}>DAILY WEIGHT LOG</div>
+          <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:"#555577"}}>{allWeightData.length} entries · tap to edit</div>
+        </div>
+
+        {allWeightData.length === 0 ? (
+          <div style={{textAlign:"center",padding:"24px 0",color:"#333344",fontFamily:"'DM Sans',sans-serif",fontSize:13}}>
+            No weight entries yet. Start logging from the Log tab or use + Add Entry above.
+          </div>
+        ) : (
+          <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:380,overflowY:"auto"}}>
+            {[...allWeightData].reverse().map((entry, idx) => {
+              const prev = allWeightData[allWeightData.length - 2 - idx];
+              const delta = prev ? entry.w - prev.w : null;
+              const isEdit = editingEntry === entry.date;
+              const d = new Date(entry.date + "T12:00:00");
+              const label = `${DAY_NAMES[d.getDay()]}, ${MONTH_NAMES[d.getMonth()]} ${d.getDate()}`;
+              const isToday2 = entry.date === today;
+              return (
+                <div key={entry.date} style={{
+                  display:"flex",alignItems:"center",gap:10,padding:"10px 12px",
+                  background: isToday2 ? "#4fc3f718" : (idx%2===0?"#0e0e1c":"#0b0b18"),
+                  borderRadius:12,
+                  border: isToday2 ? "1px solid #4fc3f744" : "1px solid transparent",
+                  animation:`fadeUp 0.25s ${Math.min(idx,10)*0.03}s both`,
+                }}>
+                  {/* Date */}
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:isToday2?"#4fc3f7":"#888aaa",fontWeight:isToday2?600:400,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                      {isToday2 ? "Today — " : ""}{label}
+                    </div>
+                  </div>
+
+                  {/* Delta */}
+                  <div style={{width:44,textAlign:"right"}}>
+                    {delta!=null && (
+                      <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:13,fontWeight:700,color:delta>0?"#39d98a":delta<0?"#ff6b6b":"#555577"}}>
+                        {delta>0?"+":""}{delta.toFixed(1)}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Weight — inline edit or display */}
+                  {isEdit ? (
+                    <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                      <input autoFocus type="number" step="0.1" value={editVal} onChange={e=>setEditVal(e.target.value)}
+                        onKeyDown={e=>{ if(e.key==="Enter") saveEditEntry(entry.date); if(e.key==="Escape") setEditingEntry(null); }}
+                        style={{width:72,padding:"5px 8px",background:"#1a1a2e",border:"1px solid #f0b429",borderRadius:8,color:"#f0b429",fontFamily:"'Barlow Condensed',sans-serif",fontSize:18,fontWeight:700,outline:"none",textAlign:"center"}}/>
+                      <button onClick={()=>saveEditEntry(entry.date)} style={{background:"#39d98a",border:"none",borderRadius:7,padding:"5px 9px",cursor:"pointer",color:"#000",fontSize:13,fontWeight:700}}>✓</button>
+                      <button onClick={()=>setEditingEntry(null)} style={{background:"#1a1a2e",border:"none",borderRadius:7,padding:"5px 9px",cursor:"pointer",color:"#888aaa",fontSize:13}}>✕</button>
+                    </div>
+                  ) : (
+                    <div style={{display:"flex",alignItems:"center",gap:6}}>
+                      <div onClick={()=>{ setEditingEntry(entry.date); setEditVal(String(entry.w)); }}
+                        style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:22,fontWeight:900,color:"#fff",cursor:"pointer",padding:"2px 8px",borderRadius:8,transition:"background 0.15s"}}
+                        onMouseEnter={e=>e.currentTarget.style.background="#1a1a2e"}
+                        onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                        {entry.w}<span style={{fontSize:12,color:"#555577",fontWeight:400}}> lbs</span>
+                      </div>
+                      <button onClick={()=>deleteEntry(entry.date)} style={{background:"none",border:"none",cursor:"pointer",color:"#ff6b6b",fontSize:14,opacity:0.4,padding:"2px 4px",lineHeight:1}}
+                        onMouseEnter={e=>e.currentTarget.style.opacity="1"}
+                        onMouseLeave={e=>e.currentTarget.style.opacity="0.4"}>🗑</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* ── MILESTONE BADGES ── */}
+      <div style={{...S.card,padding:18}}>
+        <div style={{...S.val,fontSize:18,color:"#fff",marginBottom:14}}>MILESTONE BADGES</div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:10}}>
+          {badges.map(b=>{
+            const unlocked = gained >= b.lbs;
+            return (
+              <div key={b.lbs} style={{
+                textAlign:"center",padding:"14px 8px",borderRadius:14,
+                background: unlocked?"#f0b42918":"rgba(255,255,255,0.03)",
+                border: unlocked?"1px solid #f0b42944":"1px solid #1a1a2e",
+                transition:"all 0.3s",
+              }}>
+                <div style={{fontSize:30,filter:unlocked?"none":"grayscale(1) opacity(0.2)",transition:"all 0.3s"}}>{b.emoji}</div>
+                <div style={{...S.val,fontSize:15,color:unlocked?"#f0b429":"#333344",marginTop:4}}>{b.lbs===20?"GOAL!":"+"+b.lbs+" lb"}</div>
+                <div style={{fontFamily:"'DM Sans',sans-serif",fontSize:10,color:unlocked?"#888aaa":"#333344"}}>{b.label}</div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ── PROFILE SETTINGS ── */}
+      <div style={{...S.card,padding:18}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:editProfile?14:0}}>
+          <div style={{...S.val,fontSize:18,color:"#fff"}}>PROFILE SETTINGS</div>
+          <button onClick={()=>setEditProfile(!editProfile)} style={{background:"#1a1a2e",border:"none",color:"#888aaa",padding:"6px 14px",borderRadius:8,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontSize:12,fontWeight:600}}>
+            {editProfile?"Cancel":"Edit"}
+          </button>
+        </div>
+        {editProfile && (
+          <div style={{display:"flex",flexDirection:"column",gap:12,animation:"fadeUp 0.3s ease"}}>
+            <div>
+              <label style={{...S.label,display:"block",marginBottom:5}}>Starting Weight (lbs)</label>
+              <input type="number" value={sw} onChange={e=>setSw(e.target.value)} style={{width:"100%",padding:"10px 14px",background:"#0e0e1c",border:"1px solid #2a2a3e",borderRadius:10,color:"#fff",fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,outline:"none"}}/>
+            </div>
+            <div>
+              <label style={{...S.label,display:"block",marginBottom:5}}>Program Start Date</label>
+              <input type="date" value={sd} onChange={e=>setSd(e.target.value)} style={{width:"100%",padding:"10px 14px",background:"#0e0e1c",border:"1px solid #2a2a3e",borderRadius:10,color:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:14,outline:"none"}}/>
+            </div>
+            <button onClick={saveProfile} style={{padding:"12px",background:"linear-gradient(135deg,#f0b429,#ff8f00)",border:"none",borderRadius:10,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:800,color:"#000",letterSpacing:1}}>SAVE PROFILE</button>
+          </div>
+        )}
+        {!editProfile && (
+          <div style={{display:"flex",gap:24,marginTop:12}}>
+            <div><div style={{...S.label}}>Start</div><div style={{...S.val,fontSize:22,color:"#fff"}}>{profile.startWeight} lbs</div></div>
+            <div><div style={{...S.label}}>Goal</div><div style={{...S.val,fontSize:22,color:"#f0b429"}}>{profile.startWeight+20} lbs</div></div>
+            <div><div style={{...S.label}}>Since</div><div style={{...S.val,fontSize:18,color:"#4fc3f7"}}>{profile.startDate||"—"}</div></div>
+          </div>
+        )}
+      </div>
+
+      {/* ── IMPORT FROM WATCH ── */}
+      <WatchImportCard logs={logs} setLogs={setLogs} onCelebrate={onCelebrate}/>
+
+      {/* ── DATA: BACKUP & RESTORE ── */}
+      <DataCard logs={logs} setLogs={setLogs} onCelebrate={onCelebrate}/>
+
+    </div>
+  );
+}
+
+/* ─── MAIN APP ───────────────────────────────────────────────────────────── */
+function App() {
+  const [view, setView] = useState("dashboard");
+  const [selectedDate, setSelectedDate] = useState(todayKey());
+  const [logs, setLogs] = useState({});
+  const [profile, setProfile] = useState({ startWeight:175, startDate:todayKey(), currentWeight:175 });
+  const [celebration, setCelebration] = useState(null);
+  const [loaded, setLoaded] = useState(false);
+  const [activeTimer, setActiveTimer] = useState(null); // { exercise, setNum, totalSets, color }
+  const celebQueue = useRef([]);
+
+  useEffect(() => {
+    (async () => {
+      const l = await storageGet("logs");
+      const p = await storageGet("profile");
+      if(l) setLogs(l);
+      if(p) setProfile(p);
+      setLoaded(true);
+    })();
+  }, []);
+
+  const handleCelebrate = useCallback((data) => {
+    if(celebration) { celebQueue.current.push(data); return; }
+    setCelebration(data);
+  }, [celebration]);
+
+  const handleCelebDone = useCallback(() => {
+    if(celebQueue.current.length > 0) { setCelebration(celebQueue.current.shift()); }
+    else { setCelebration(null); }
+  }, []);
+
+  const stopTimer = useCallback(() => setActiveTimer(null), []);   // timer ran out
+  const { startTimer, cancelTimer, adjustTimer, activity, health } = useWatchLive({ logs, setLogs, activeTimer, setActiveTimer });
+
+  // Lenis smooths wheel/trackpad scrolling; phones keep native touch scrolling and inner lists scroll on their own
+  const lenis = useRef(null);
+  useEffect(() => {
+    if (!window.Lenis || REDUCED_MOTION) return;
+    lenis.current = new Lenis({ autoRaf: true, allowNestedScroll: true });
+    return () => { lenis.current.destroy(); lenis.current = null; };
+  }, []);
+  // each tab opens at the top, with its sections staggering in
+  const viewRef = useRef(null);
+  useEffect(() => { if (lenis.current) lenis.current.scrollTo(0, { immediate: true }); else window.scrollTo(0, 0); }, [view]);
+  useStaggerIn(viewRef, loaded ? view : null);
+
+  if(!loaded) return (
+    <div style={{height:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#07070f",flexDirection:"column",gap:16}}>
+      <div style={{width:48,height:48,borderRadius:"50%",border:"3px solid #f0b42933",borderTopColor:"#f0b429",animation:"spin 0.8s linear infinite"}}/>
+      <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,color:"#888aaa",letterSpacing:2}}>LOADING YOUR PLAN...</div>
+    </div>
+  );
+
+  return (
+    <div style={{minHeight:"100vh",background:"#07070f",display:"flex",flexDirection:"column",maxWidth:480,margin:"0 auto",fontFamily:"'DM Sans',sans-serif",color:"#ffffff",position:"relative"}}>
+      <GlobalStyle/>
+      {celebration && <Celebration data={celebration} onDone={handleCelebDone}/>}
+      {activeTimer && <TimerIsland timer={activeTimer} onStop={stopTimer} onCancel={cancelTimer} onAdjust={adjustTimer}/>}
+      <div ref={viewRef} style={{flex:1, overflowY:"auto", paddingTop: activeTimer ? 58 : 0, paddingBottom:4, transition:"padding-top 0.3s ease"}}>
+        {view==="dashboard" && <Dashboard logs={logs} profile={profile} setView={setView} setSelectedDate={setSelectedDate} setLogs={setLogs} onCelebrate={handleCelebrate} activity={activity} health={health}/>}
+        {view==="log" && <DailyLog selectedDate={selectedDate} logs={logs} setLogs={setLogs} onCelebrate={handleCelebrate} profile={profile} activeTimer={activeTimer} onStartTimer={startTimer} onStopTimer={cancelTimer}/>}
+        {view==="calendar" && <Calendar logs={logs} selectedDate={selectedDate} setSelectedDate={setSelectedDate} setView={setView}/>}
+        {view==="progress" && <Progress logs={logs} setLogs={setLogs} profile={profile} setProfile={setProfile} onCelebrate={handleCelebrate}/>}
+      </div>
+      <Nav view={view} setView={setView}/>
+    </div>
+  );
+}
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
