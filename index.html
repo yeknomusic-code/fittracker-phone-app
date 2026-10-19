@@ -12,9 +12,9 @@
 
   <title>💪 Muscle Growth Tracker</title>
 
-  <link rel="manifest" href="/manifest.json"/>
-  <link rel="apple-touch-icon" href="/icon-192.png"/>
-  <link rel="icon" type="image/png" href="/icon-192.png"/>
+  <link rel="manifest" href="./manifest.json"/>
+  <link rel="apple-touch-icon" href="./icon-192.png"/>
+  <link rel="icon" type="image/png" href="./icon-192.png"/>
 
   <!-- React + Babel via CDN -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
@@ -44,7 +44,7 @@
     // Register service worker for offline use
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/sw.js')
+        navigator.serviceWorker.register('./sw.js')
           .then(r => console.log('SW registered'))
           .catch(e => console.log('SW failed:', e));
       });
