@@ -1233,58 +1233,20 @@ function WatchSyncCard({ logs, setLogs, onCelebrate, health }) {
   const lt = LIVE_TXT[live];
   return (
     <div style={{background: `${P.card}`, borderRadius: 28, padding: "16px 18px", border: `1px solid rgba(${P.ink},0.16)`}}>
-      <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12}}>
-        <div>
-          <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: `${P.sub}`, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5}}>{kind === "apple" ? "" : "⌚ "}{WATCH_NAME[kind]}</div>
-          <div style={{fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, fontWeight: 800, color: `${P.text}`}}>{paired ? "WATCH LINK" : "SYNC WORKOUTS"}</div>
-        </div>
-        {paired && lt ? (
-          <div style={{display: "flex", alignItems: "center", gap: 6, background: `${lt[0]}1a`, border: `1px solid ${lt[0]}55`, borderRadius: 28, padding: "5px 11px"}}>
-            <div style={{width: 8, height: 8, borderRadius: "50%", background: lt[0], boxShadow: `0 0 6px ${lt[0]}`, animation: live === "live" ? "pulseGlow 2s ease-in-out infinite" : "none"}}/>
-            <span style={{fontFamily: "'Barlow Condensed',sans-serif", fontSize: 14, fontWeight: 800, letterSpacing: 1, color: lt[0], textTransform: "uppercase"}}>{lt[1]}</span>
-          </div>
-        ) : (
-          <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: `${P.muted}`, textAlign: "right"}}>Last sync<br/>{ago}</div>
-        )}
-      </div>
+      <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: `${P.sub}`, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 10}}>{kind === "apple" ? "" : "⌚ "}{WATCH_NAME[kind]}</div>
 
-      {paired ? (
-        <div style={{display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 12}}>
-          <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: `${P.sub}`, lineHeight: 1.4}}>{lt ? lt[2] : ""}</div>
-          <button onClick={unpair} style={{background: "none", border: "none", color: `${P.muted}`, fontFamily: "'DM Sans',sans-serif", fontSize: 11, cursor: "pointer", whiteSpace: "nowrap", textDecoration: "underline"}}>Unlink</button>
+      {paired && lt ? (
+        <div style={{display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8}}>
+          <div style={{display: "flex", alignItems: "center", gap: 6}}>
+            <div style={{width: 8, height: 8, borderRadius: "50%", background: lt[0], boxShadow: `0 0 6px ${lt[0]}`, animation: live === "live" ? "pulseGlow 2s ease-in-out infinite" : "none"}}/>
+            <span style={{fontFamily: "'Barlow Condensed',sans-serif", fontSize: 16, fontWeight: 800, letterSpacing: 1, color: lt[0], textTransform: "uppercase"}}>{lt[1]}</span>
+          </div>
+          <button onClick={unpair} style={{background: "none", border: "none", color: `${P.muted}`, fontFamily: "'DM Sans',sans-serif", fontSize: 11, cursor: "pointer"}}>Unlink</button>
         </div>
       ) : kind === "galaxy" ? (
-        <>
-          <button disabled={busy} onClick={pair} style={{...btn(true), width: "100%", marginBottom: 8}}>🔗 PAIR WATCH FOR LIVE SYNC</button>
-          <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: `${P.muted}`, margin: "0 2px 10px", lineHeight: 1.4}}>
-            On the watch: open FitTracker → <b style={{color: `${P.sub}`}}>Pair phone</b>, then tap the button above.
-          </div>
-        </>
+        <button disabled={busy} onClick={pair} style={{...btn(true), width: "100%"}}>🔗 PAIR</button>
       ) : (
-        <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: `${P.sub}`, margin: "0 2px 4px", lineHeight: 1.45}}>
-          Not linked yet. Set it up under <b style={{color: "#d1d1d6"}}>Progress → Watch settings → Advanced</b>.
-        </div>
-      )}
-
-      {paired && kind === "apple" && (
-        <div style={{display: "flex", alignItems: "center", gap: 12, background: `rgba(${P.ink},0.13)`, border: `1px solid rgba(${P.ink},0.16)`, borderRadius: 20, padding: "10px 12px", marginBottom: 14}}>
-          <div style={{fontSize: 22}}>❤️</div>
-          <div style={{flex: 1, minWidth: 0}}>
-            <div style={{fontFamily: "'Barlow Condensed',sans-serif", fontSize: 16, fontWeight: 800, color: `${P.text}`, letterSpacing: 0.5}}>APPLE HEALTH</div>
-            <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: `${P.sub}`, lineHeight: 1.35}}>Saved by the watch app</div>
-          </div>
-        </div>
-      )}
-
-      {paired && kind === "galaxy" && (
-        <div style={{display: "flex", alignItems: "center", gap: 12, background: `rgba(${P.ink},0.13)`, border: `1px solid rgba(${P.ink},0.16)`, borderRadius: 20, padding: "10px 12px", marginBottom: 14}}>
-          <div style={{fontSize: 22}}>❤️</div>
-          <div style={{flex: 1, minWidth: 0}}>
-            <div style={{fontFamily: "'Barlow Condensed',sans-serif", fontSize: 16, fontWeight: 800, color: `${P.text}`, letterSpacing: 0.5}}>SAMSUNG HEALTH</div>
-            <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: health && health.err ? `${P.bad}` : `${P.sub}`, lineHeight: 1.35}}>{hcLine}</div>
-          </div>
-          <button onClick={connectHealth} style={{...btn(!health), flex: "none", padding: "9px 14px", fontSize: 14}}>{health ? "SYNC NOW" : "CONNECT"}</button>
-        </div>
+        <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: `${P.sub}`}}>Not linked</div>
       )}
       {status && <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: `${P.acc}`, marginTop: 10, lineHeight: 1.4}}>{status}</div>}
     </div>
@@ -3348,6 +3310,7 @@ function Calendar({ logs, selectedDate, setSelectedDate, setView }) {
 
 /* ─── PROGRESS ───────────────────────────────────────────────────────────── */
 function Progress({ logs, setLogs, profile, setProfile, onCelebrate }) {
+  const [settingsTab, setSettingsTab] = useState("profile");
   const [editProfile, setEditProfile] = useState(false);
   const [sw, setSw] = useState(String(profile.startWeight));
   const [sd, setSd] = useState(profile.startDate||todayKey());
@@ -3777,61 +3740,63 @@ function Progress({ logs, setLogs, profile, setProfile, onCelebrate }) {
         </div>
       </div>
 
-      {/* ── SETTINGS (collapsed accordion rows to save space) ── */}
-      {(() => { const sumStyle = {cursor:"pointer", listStyle:"none", fontFamily:"'Barlow Condensed',sans-serif", fontSize:16, fontWeight:800, color:P.text, padding:"14px 18px"};
-        const wrap = {...S.card, padding:0, overflow:"hidden"};
-        return (<>
-        <details style={wrap}>
-          <summary style={sumStyle}>PROFILE SETTINGS</summary>
-          <div style={{padding:"0 18px 18px"}}>
-            <div style={{display:"flex",justifyContent:"flex-end",marginBottom:editProfile?14:0}}>
-              <button onClick={()=>setEditProfile(!editProfile)} style={{background:`rgba(${P.ink},0.13)`,border:"none",color:`${P.sub}`,padding:"6px 14px",borderRadius:8,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontSize:12,fontWeight:600}}>
-                {editProfile?"Cancel":"Edit"}
-              </button>
-            </div>
-            {editProfile && (
-              <div style={{display:"flex",flexDirection:"column",gap:12,animation:"fadeUp 0.3s ease"}}>
-                <div>
-                  <label style={{...S.label,display:"block",marginBottom:5}}>Starting Weight (lbs)</label>
-                  <input type="number" value={sw} onChange={e=>setSw(e.target.value)} style={{width:"100%",padding:"10px 14px",background:`${P.inset}`,border:`1px solid rgba(${P.ink},0.22)`,borderRadius:14,color:`${P.text}`,fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,outline:"none"}}/>
-                </div>
-                <div>
-                  <label style={{...S.label,display:"block",marginBottom:5}}>Program Start Date</label>
-                  <input type="date" value={sd} onChange={e=>setSd(e.target.value)} style={{width:"100%",padding:"10px 14px",background:`${P.inset}`,border:`1px solid rgba(${P.ink},0.22)`,borderRadius:14,color:`${P.text}`,fontFamily:"'DM Sans',sans-serif",fontSize:14,outline:"none"}}/>
-                </div>
-                <button onClick={saveProfile} style={{padding:"12px",background:`linear-gradient(135deg,${P.acc},${P.acc2})`,border:"none",borderRadius:14,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:800,color:`${P.onAcc}`,letterSpacing:1}}>SAVE PROFILE</button>
-              </div>
-            )}
-            {!editProfile && (
-              <div style={{display:"flex",gap:24}}>
-                <div><div style={{...S.label}}>Start</div><div style={{...S.val,fontSize:22,color:`${P.text}`}}>{profile.startWeight} lbs</div></div>
-                <div><div style={{...S.label}}>Goal</div><div style={{...S.val,fontSize:22,color:`${P.acc}`}}>{profile.startWeight+20} lbs</div></div>
-                <div><div style={{...S.label}}>Since</div><div style={{...S.val,fontSize:18,color:`${P.info}`}}>{profile.startDate||"—"}</div></div>
-              </div>
-            )}
+      {/* ── SETTINGS: one tab menu, one panel ── */}
+      {(() => {
+        const TABS = [
+          {id:"profile",  label:"Profile"},
+          {id:"appear",   label:"Appearance"},
+          {id:"watch",    label:"Watch"},
+          {id:"import",   label:"Import"},
+          {id:"backup",   label:"Backup"},
+        ];
+        return (<div style={{...S.card, padding:0, overflow:"hidden"}}>
+          <div style={{display:"flex", overflowX:"auto", borderBottom:`1px solid rgba(${P.ink},0.14)`}}>
+            {TABS.map(t => (
+              <button key={t.id} onClick={() => setSettingsTab(t.id)} style={{
+                flex:"1 0 auto", padding:"12px 14px", background:"none", border:"none", cursor:"pointer",
+                borderBottom: settingsTab===t.id ? `2px solid ${P.acc}` : "2px solid transparent",
+                color: settingsTab===t.id ? P.acc : P.muted,
+                fontFamily:"'Barlow Condensed',sans-serif", fontSize:14, fontWeight:800, letterSpacing:0.5, whiteSpace:"nowrap",
+              }}>{t.label}</button>
+            ))}
           </div>
-        </details>
-
-        <details style={wrap}>
-          <summary style={sumStyle}>APPEARANCE</summary>
-          <div style={{padding:"0 18px 18px"}}><AppearanceCard/></div>
-        </details>
-
-        <details style={wrap}>
-          <summary style={sumStyle}>WATCH SETTINGS</summary>
-          <div style={{padding:"0 18px 18px"}}><WatchSettingsCard/></div>
-        </details>
-
-        <details style={wrap}>
-          <summary style={sumStyle}>IMPORT FROM WATCH</summary>
-          <div style={{padding:"0 18px 18px"}}><WatchImportCard logs={logs} setLogs={setLogs} onCelebrate={onCelebrate}/></div>
-        </details>
-
-        <details style={wrap}>
-          <summary style={sumStyle}>DATA: BACKUP & RESTORE</summary>
-          <div style={{padding:"0 18px 18px"}}><DataCard logs={logs} setLogs={setLogs} onCelebrate={onCelebrate}/></div>
-        </details>
-        </>); })()}
+          <div style={{padding:18}}>
+            {settingsTab === "profile" && (
+              <div>
+                <div style={{display:"flex",justifyContent:"flex-end",marginBottom:editProfile?14:0}}>
+                  <button onClick={()=>setEditProfile(!editProfile)} style={{background:`rgba(${P.ink},0.13)`,border:"none",color:`${P.sub}`,padding:"6px 14px",borderRadius:8,cursor:"pointer",fontFamily:"'DM Sans',sans-serif",fontSize:12,fontWeight:600}}>
+                    {editProfile?"Cancel":"Edit"}
+                  </button>
+                </div>
+                {editProfile && (
+                  <div style={{display:"flex",flexDirection:"column",gap:12,animation:"fadeUp 0.3s ease"}}>
+                    <div>
+                      <label style={{...S.label,display:"block",marginBottom:5}}>Starting Weight (lbs)</label>
+                      <input type="number" value={sw} onChange={e=>setSw(e.target.value)} style={{width:"100%",padding:"10px 14px",background:`${P.inset}`,border:`1px solid rgba(${P.ink},0.22)`,borderRadius:14,color:`${P.text}`,fontFamily:"'Barlow Condensed',sans-serif",fontSize:20,fontWeight:700,outline:"none"}}/>
+                    </div>
+                    <div>
+                      <label style={{...S.label,display:"block",marginBottom:5}}>Program Start Date</label>
+                      <input type="date" value={sd} onChange={e=>setSd(e.target.value)} style={{width:"100%",padding:"10px 14px",background:`${P.inset}`,border:`1px solid rgba(${P.ink},0.22)`,borderRadius:14,color:`${P.text}`,fontFamily:"'DM Sans',sans-serif",fontSize:14,outline:"none"}}/>
+                    </div>
+                    <button onClick={saveProfile} style={{padding:"12px",background:`linear-gradient(135deg,${P.acc},${P.acc2})`,border:"none",borderRadius:14,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",fontSize:16,fontWeight:800,color:`${P.onAcc}`,letterSpacing:1}}>SAVE PROFILE</button>
+                  </div>
+                )}
+                {!editProfile && (
+                  <div style={{display:"flex",gap:24}}>
+                    <div><div style={{...S.label}}>Start</div><div style={{...S.val,fontSize:22,color:`${P.text}`}}>{profile.startWeight} lbs</div></div>
+                    <div><div style={{...S.label}}>Goal</div><div style={{...S.val,fontSize:22,color:`${P.acc}`}}>{profile.startWeight+20} lbs</div></div>
+                    <div><div style={{...S.label}}>Since</div><div style={{...S.val,fontSize:18,color:`${P.info}`}}>{profile.startDate||"—"}</div></div>
+                  </div>
+                )}
+              </div>
+            )}
+            {settingsTab === "appear" && <AppearanceCard/>}
+            {settingsTab === "watch" && <WatchSettingsCard/>}
+            {settingsTab === "import" && <WatchImportCard logs={logs} setLogs={setLogs} onCelebrate={onCelebrate}/>}
+            {settingsTab === "backup" && <DataCard logs={logs} setLogs={setLogs} onCelebrate={onCelebrate}/>}
+          </div>
+        </div>);
+      })()}
 
     </div>
   );
