@@ -1249,6 +1249,12 @@ function WatchSyncCard({ logs, setLogs, onCelebrate, health }) {
       ) : (
         <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: `${P.sub}`}}>Not linked</div>
       )}
+      {paired && kind === "galaxy" && (
+        <div onClick={connectHealth} style={{display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginTop: 10, paddingTop: 10, borderTop: `1px solid rgba(${P.ink},0.12)`, cursor: "pointer"}}>
+          <span style={{fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: `${P.sub}`}}>🩺 Samsung Health</span>
+          <span style={{fontFamily: "'DM Sans',sans-serif", fontSize: 11, color: health && !health.err ? `${P.good}` : `${P.muted}`}}>{hcLine} ›</span>
+        </div>
+      )}
       {status && <div style={{fontFamily: "'DM Sans',sans-serif", fontSize: 12, color: `${P.acc}`, marginTop: 10, lineHeight: 1.4}}>{status}</div>}
     </div>
   );
